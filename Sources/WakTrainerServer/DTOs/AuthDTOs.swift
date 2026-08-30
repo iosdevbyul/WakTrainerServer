@@ -5,30 +5,34 @@
 //  Created by COMATOKI on 2026-08-28.
 //
 
+// Sources/WakTrainerServer/DTOs/AuthDTOs.swift
+
 import Vapor
 
 // MARK: - Request DTOs
-struct AuthRequest: Content {
+/// iOS 클라이언트의 LoginRequestDTO / SignUpRequestDTO와 매핑
+struct AuthRequestDTO: Content {
     let email: String
     let password: String
 }
 
-struct ForgotPasswordRequest: Content {
+/// iOS 클라이언트의 ForgotPasswordRequestDTO와 매핑
+struct ForgotPasswordRequestDTO: Content {
     let email: String
 }
 
 // MARK: - Response DTOs
-struct UserResponse: Content {
+struct UserResponseDTO: Content {
     let id: String
     let email: String
 }
 
-struct SessionResponse: Content {
-    let user: UserResponse
+struct SessionResponseDTO: Content {
+    let user: UserResponseDTO
     let accessToken: String
     let refreshToken: String?
 }
 
-struct MessageResponse: Content {
+struct MessageResponseDTO: Content {
     let message: String
 }
