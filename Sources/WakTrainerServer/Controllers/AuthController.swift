@@ -27,6 +27,9 @@ struct AuthController: RouteCollection {
         
         // POST /auth/forgot-password
         auth.post("forgot-password", use: forgotPassword)
+        
+        // POST /auth/change-password
+        auth.post("change-password", use: changePassword)
     }
 
     // POST /auth/login
@@ -83,6 +86,24 @@ struct AuthController: RouteCollection {
         let body = try req.content.decode(ForgotPasswordRequestDTO.self)
         
         return MessageResponseDTO(message: "Password reset email sent to \(body.email).")
+    }
+    
+    // POST /auth/change-password
+    @Sendable
+    func changePassword(req: Request) async throws -> MessageResponseDTO {
+        let body = try req.content.decode(ChangePasswordRequestDTO.self)
+
+        guard !body.currentPassword.isEmpty,
+              !body.newPassword.isEmpty else {
+            throw Abort(
+                .badRequest,
+                reason: "Passwords must not be empty."
+            )
+        }
+
+        return MessageResponseDTO(
+            message: "Password changed successfully."
+        )
     }
 }
 

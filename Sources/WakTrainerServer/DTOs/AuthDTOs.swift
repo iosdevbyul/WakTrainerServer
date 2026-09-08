@@ -36,3 +36,9 @@ struct SessionResponseDTO: Content {
 struct MessageResponseDTO: Content {
     let message: String
 }
+
+/// iOS 클라이언트의 ChangePasswordRequestDTO와 매핑
+struct ChangePasswordRequestDTO: Content {
+    let currentPassword: String
+    let newPassword: String
+}
