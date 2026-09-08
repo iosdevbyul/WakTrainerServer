@@ -37,8 +37,8 @@ func configure(_ app: Application) async throws {
     )
 
     app.migrations.add(CreateUserMigration())
-//    app.migrations.add(CreateRefreshTokenMigration())
-//    app.migrations.add(CreateLoginRateLimitMigration())
+    app.migrations.add(CreateRefreshTokenMigration())
+    app.migrations.add(CreateLoginRateLimitMigration())
     app.migrations.add(CreatePasswordResetTokenMigration())
     try routes(app)
 }

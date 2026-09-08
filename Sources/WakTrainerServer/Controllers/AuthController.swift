@@ -13,6 +13,7 @@ struct AuthController: RouteCollection {
         auth.delete("withdraw", use: withdraw)
         auth.post("forgot-password", use: forgotPassword)
         auth.post("change-password", use: changePassword)
+        auth.post("reset-password", use: resetPassword)
     }
 
     private func validate(email: String, password: String) throws {
@@ -207,5 +208,63 @@ struct AuthController: RouteCollection {
         }
 
         return .init(message: responseMessage)
+    }
+    
+    @Sendable
+    func resetPassword(req: Request) async throws -> MessageResponseDTO {
+        let body = try req.content.decode(ResetPasswordRequestDTO.self)
+
+        try validate(password: body.newPassword)
+
+        guard body.token.utf8.count == 64 else {
+            throw Abort(
+                .badRequest,
+                reason: "유효하지 않은 비밀번호 재설정 토큰입니다."
+            )
+        }
+
+        let tokenHash = AuthSession.hash(body.token)
+
+        guard let resetToken = try await PasswordResetToken.query(on: req.db)
+            .filter(\.$tokenHash == tokenHash)
+            .first()
+        else {
+            throw Abort(
+                .badRequest,
+                reason: "유효하지 않거나 만료된 비밀번호 재설정 토큰입니다."
+            )
+        }
+
+        guard let expiresAt = resetToken.expiresAt,
+              expiresAt > Date() else {
+            try? await resetToken.delete(on: req.db)
+
+            throw Abort(
+                .badRequest,
+                reason: "유효하지 않거나 만료된 비밀번호 재설정 토큰입니다."
+            )
+        }
+
+        let userID = resetToken.$user.id
+        let passwordHash = try await req.password.async.hash(body.newPassword)
+
+        try await req.db.transaction { db in
+            let user = try await AuthSession.lockUser(userID, on: db)
+
+            user.passwordHash = passwordHash
+            try await user.update(on: db)
+
+            try await RefreshToken.query(on: db)
+                .filter(\.$user.$id == userID)
+                .delete()
+
+            try await PasswordResetToken.query(on: db)
+                .filter(\.$user.$id == userID)
+                .delete()
+        }
+
+        return .init(
+            message: "Password reset successfully. Please log in again."
+        )
     }
 }
