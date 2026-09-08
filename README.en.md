@@ -60,6 +60,34 @@ Existing JWTs without `sid` and mock refresh tokens are no longer accepted. Sign
 
 Password reset is not implemented yet. After choosing an email provider and sender address, email delivery, storage and verification of single-use reset tokens, and a reset-password endpoint must be implemented. The current endpoint returns 503 instead of claiming an email was sent.
 
+## Login rate limiting
+
+`POST /auth/login` shares request counters through PostgreSQL's `login_rate_limits` table. Apply `CreateLoginRateLimitMigration` before starting the updated server.
+
+- Allow 30 attempts per directly connected IP in 60 seconds and 10 attempts per email in 15 minutes.
+- Count both successful and failed attempts; success does not reset counters. Apply the IP limit before JSON decoding, and the email limit after input validation but before account lookup and bcrypt verification.
+- Return `429 Too Many Requests` with `Retry-After` in seconds when exceeded. Attempts resume after the fixed window expires; rejected requests do not extend it.
+- Trim whitespace and lowercase email addresses only for rate-limit keys. Account storage and login lookup remain case-sensitive.
+- Store SHA-256 hashes instead of raw IP/email values. These hashes are still guessable by hashing candidate values and must not be treated as anonymous data.
+- Use an atomic database upsert and database time to share limits across concurrent requests and application instances. Database errors do not bypass throttling.
+- Clean up at most 100 expired entries per login request.
+
+Forwarding headers such as `X-Forwarded-For` are not trusted. Behind a proxy, requests share that proxy's IP quota until a trusted-proxy and client-IP policy is implemented. Requests with no available IP share a common quota.
+
+These limits are an initial policy. An attacker can temporarily exhaust another email's login quota, so monitor usage and throttling metrics when tuning them. Limits for other endpoints, such as signup and token refresh, and infrastructure-level traffic protection remain separate work. Reference: [OWASP Login Throttling](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html#login-throttling).
+
+## Remaining work before public deployment
+
+The current Docker Compose configuration and PostgreSQL `tls: .disable` setting target local development. Production readiness still requires:
+
+- HTTPS termination and certificate renewal, trusted proxies, and a client-IP policy
+- Production PostgreSQL TLS with server certificate/hostname verification and restricted database network access
+- Secret injection through a secret manager or deployment environment, plus secret rotation
+- Logging that excludes passwords/tokens and monitoring/alerts for errors, login failures, and 429 responses
+- Stronger email validation, a lowercase/whitespace policy, and migration after checking existing account collisions
+- Revisiting the JWTKit 5.6.0 pin after Swift/Xcode/JWT updates, with Xcode/CLI builds and authentication regression tests
+- Password reset email delivery and single-use reset tokens
+
 ## Validation
 
 ```sh

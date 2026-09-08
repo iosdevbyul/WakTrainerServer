@@ -31,8 +31,10 @@ struct AuthController: RouteCollection {
 
     @Sendable
     func login(req: Request) async throws -> SessionResponseDTO {
+        try await LoginRateLimiter.checkIP(req)
         let body = try req.content.decode(AuthRequestDTO.self)
         try validate(email: body.email, password: body.password)
+        try await LoginRateLimiter.checkEmail(body.email, on: req.db)
         guard let existing = try await User.query(on: req.db).filter(\.$email == body.email).first() else {
             throw Abort(.unauthorized, reason: "이메일 또는 비밀번호가 올바르지 않습니다.")
         }

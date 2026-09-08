@@ -1,5 +1,6 @@
 @testable import WakTrainerServer
 import Fluent
+import SQLKit
 import FluentPostgresDriver
 import JWT
 import Testing
@@ -29,7 +30,7 @@ struct AuthIntegrationTests {
                 database: name, tls: .disable
             )), as: .psql)
             await app.jwt.keys.add(hmac: .init(from: AuthSession.randomToken()), digestAlgorithm: .sha256)
-            app.migrations.add(CreateUserMigration(), CreateRefreshTokenMigration())
+            app.migrations.add(CreateUserMigration(), CreateRefreshTokenMigration(), CreateLoginRateLimitMigration())
             try routes(app)
             try await app.autoMigrate()
         }) { app in
@@ -100,7 +101,56 @@ struct AuthIntegrationTests {
             #expect(deletedAccess.status == .unauthorized)
             let deletedLogin = try await request(app, .POST, "login", body: ["email": email, "password": newPassword])
             #expect(deletedLogin.status == .unauthorized)
+            try await verifyRateLimits(app)
             try await app.autoRevert()
         }
     }
+    private func verifyRateLimits(_ app: Application) async throws {
+        let sql = try #require(app.db as? any SQLDatabase)
+        try await sql.raw("DELETE FROM login_rate_limits").run()
+        let email = UUID().uuidString + "@example.com"
+        let password = String(AuthSession.randomToken().prefix(16))
+        // Nonexistent accounts get exactly the same quota, without needing a user row.
+        for _ in 0..<10 {
+            let response = try await request(app, .POST, "login", body: ["email": email, "password": password])
+            #expect(response.status == .unauthorized)
+        }
+        let blocked = try await request(app, .POST, "login", body: ["email": email.uppercased(), "password": password])
+        #expect(blocked.status == .tooManyRequests)
+        let retryAfter = try #require(blocked.headers.first(name: "Retry-After").flatMap(Int.init))
+        #expect((1...900).contains(retryAfter))
+
+        // Expired windows allow attempts again without sleeping or changing application clocks.
+        try await sql.raw("UPDATE login_rate_limits SET expires_at = CURRENT_TIMESTAMP - INTERVAL '1 second'").run()
+        let reset = try await request(app, .POST, "login", body: ["email": email, "password": password])
+        #expect(reset.status == .unauthorized)
+
+        // Concurrent consumers share an atomic quota in PostgreSQL.
+        let results = try await withThrowingTaskGroup(of: Bool.self) { group in
+            for _ in 0..<20 {
+                group.addTask {
+                    do {
+                        try await LoginRateLimiter.consume(key: "test:concurrent", limit: 5, seconds: 60, on: app.db)
+                        return true
+                    } catch let error as Abort where error.status == .tooManyRequests {
+                        return false
+                    }
+                }
+            }
+            var allowed = 0
+            for try await result in group { if result { allowed += 1 } }
+            return allowed
+        }
+        #expect(results == 5)
+
+        // IP limiting happens even before JSON decoding; spoofed forwarding headers do not bypass it.
+        try await sql.raw("DELETE FROM login_rate_limits").run()
+        for attempt in 1...31 {
+            let response = try await app.sendRequest(.POST, "auth/login", headers: [
+                "X-Forwarded-For": "192.0.2." + String(attempt)
+            ])
+            #expect(response.status == (attempt <= 30 ? .badRequest : .tooManyRequests))
+        }
+    }
+
 }
