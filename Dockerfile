@@ -27,7 +27,7 @@ RUN mkdir /staging
 
 # Build the application, with optimizations, with static linking, and using jemalloc
 # N.B.: The static version of jemalloc is incompatible with the static Swift runtime.
-RUN --mount=type=cache,id=waktrainer-swift-build,target=/build/.build \
+RUN --mount=type=cache,id=s/2b7cf94f-cab1-4d30-b616-e7d2d30a0df3-/build/.build,target=/build/.build \
     swift build -c release \
         --product WakTrainerServer \
         --static-swift-stdlib \
