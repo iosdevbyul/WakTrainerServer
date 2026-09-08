@@ -95,12 +95,15 @@ swift build
 swift test
 ```
 
-The default tests do not require a database. PostgreSQL integration tests run only when `TEST_DATABASE_NAME` is set. Its value must start with `waktrainer_test_`. Always use an empty, disposable database: the tests create tables and revert migrations at the end.
+The basic tests do not require a database. `swift test` also runs PostgreSQL integration tests. After the application loads `.env`, the tests require `TEST_DATABASE_NAME` to equal `waktrainer_test_auth`; missing or unsafe configuration fails instead of skipping. The development database `waktrainer` is never used. Use a dedicated test database: tests create tables and revert migrations on successful completion.
 
-Optional settings: `TEST_DATABASE_HOST` (127.0.0.1), `TEST_DATABASE_PORT` (55439), `TEST_DATABASE_USERNAME` (postgres), and `TEST_DATABASE_PASSWORD`.
+Optional settings: `TEST_DATABASE_HOST` (127.0.0.1), `TEST_DATABASE_PORT` (5432), `TEST_DATABASE_USERNAME` (vapor), and `TEST_DATABASE_PASSWORD`.
 
 ```sh
-TEST_DATABASE_NAME=waktrainer_test_auth swift test
+# Configure TEST_DATABASE_NAME and TEST_DATABASE_* connection settings in .env first
+swift test
 ```
 
 Integration tests cover signup, duplicate email handling, failed login, JWT authentication, a single successful concurrent refresh, rejection of tokens after logout, revocation of all sessions after a password change, and user and session deletion on account withdrawal.
+
+Password reset integration coverage uses mock email delivery and real PostgreSQL to verify token creation, successful resets, rejection of used and expired tokens, rejection of the old password, login with the new password, and revocation of existing sessions.

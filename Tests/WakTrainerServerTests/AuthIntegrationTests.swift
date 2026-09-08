@@ -16,16 +16,18 @@ struct AuthIntegrationTests {
         })
     }
 
-    @Test(.enabled(if: Environment.get("TEST_DATABASE_NAME") != nil))
+    @Test
     func accountLifecycle() async throws {
-        let name = try #require(Environment.get("TEST_DATABASE_NAME"))
-        // Only run migrations in an explicitly selected disposable test database.
-        try #require(name.hasPrefix("waktrainer_test_"))
+        let emailService = MockEmailService()
         try await withApp(configure: { app in
+            // Application.make loads .env before this closure runs.
+            // Missing or unsafe configuration must fail instead of silently skipping.
+            let name = try #require(Environment.get("TEST_DATABASE_NAME"))
+            try #require(name == "waktrainer_test_auth")
             app.databases.use(.postgres(configuration: .init(
                 hostname: Environment.get("TEST_DATABASE_HOST") ?? "127.0.0.1",
-                port: Environment.get("TEST_DATABASE_PORT").flatMap(Int.init) ?? 55439,
-                username: Environment.get("TEST_DATABASE_USERNAME") ?? "postgres",
+                port: Environment.get("TEST_DATABASE_PORT").flatMap(Int.init) ?? 5432,
+                username: Environment.get("TEST_DATABASE_USERNAME") ?? "vapor",
                 password: Environment.get("TEST_DATABASE_PASSWORD"),
                 database: name, tls: .disable
             )), as: .psql)
@@ -36,7 +38,10 @@ struct AuthIntegrationTests {
                 CreateLoginRateLimitMigration(),
                 CreatePasswordResetTokenMigration()
             )
-            try routes(app)
+            try app.register(collection: AuthController(
+                emailService: emailService,
+                passwordResetURLBase: "https://example.com/reset-password"
+            ))
             try await app.autoMigrate()
         }) { app in
             // Valid forgot-password requests query the database, even for unknown users.
@@ -113,10 +118,59 @@ struct AuthIntegrationTests {
             #expect(deletedAccess.status == .unauthorized)
             let deletedLogin = try await request(app, .POST, "login", body: ["email": email, "password": newPassword])
             #expect(deletedLogin.status == .unauthorized)
+            try await verifyPasswordReset(app, emailService: emailService)
             try await verifyRateLimits(app)
             try await app.autoRevert()
         }
     }
+    private func verifyPasswordReset(_ app: Application, emailService: MockEmailService) async throws {
+        let email = UUID().uuidString + "@example.com"
+        let oldPassword = String(AuthSession.randomToken().prefix(16))
+        let newPassword = String(AuthSession.randomToken().prefix(16))
+        let signup = try await request(app, .POST, "signup", body: ["email": email, "password": oldPassword])
+        try #require(signup.status == .ok)
+        let session = try signup.content.decode(SessionResponseDTO.self)
+        let userID = try #require(UUID(uuidString: session.user.id))
+
+        let forgot = try await request(app, .POST, "forgot-password", body: ["email": email])
+        try #require(forgot.status == .ok)
+        #expect(emailService.sentEmail == email)
+        let resetURL = try #require(emailService.sentResetURL)
+        let token = try #require(URLComponents(string: resetURL)?.queryItems?.first { $0.name == "token" }?.value)
+        let stored = try #require(try await PasswordResetToken.query(on: app.db)
+            .filter(\.$user.$id == userID).first())
+        #expect(stored.tokenHash == AuthSession.hash(token))
+        #expect(stored.tokenHash != token)
+        #expect(try #require(stored.expiresAt) > Date())
+
+        let reset = try await request(app, .POST, "reset-password", body: ["token": token, "newPassword": newPassword])
+        try #require(reset.status == .ok)
+        #expect(try await PasswordResetToken.query(on: app.db).filter(\.$user.$id == userID).count() == 0)
+        let reused = try await request(app, .POST, "reset-password", body: ["token": token, "newPassword": oldPassword])
+        #expect(reused.status == .badRequest)
+        let oldLogin = try await request(app, .POST, "login", body: ["email": email, "password": oldPassword])
+        #expect(oldLogin.status == .unauthorized)
+        let newLogin = try await request(app, .POST, "login", body: ["email": email, "password": newPassword])
+        try #require(newLogin.status == .ok)
+        let revoked = try await request(app, .GET, "me", token: session.accessToken)
+        #expect(revoked.status == .unauthorized)
+        let revokedRefresh = try await request(app, .POST, "refresh", body: ["refreshToken": try #require(session.refreshToken)])
+        #expect(revokedRefresh.status == .unauthorized)
+
+        let forgotAgain = try await request(app, .POST, "forgot-password", body: ["email": email])
+        try #require(forgotAgain.status == .ok)
+        let nextURL = try #require(emailService.sentResetURL)
+        let expiredToken = try #require(URLComponents(string: nextURL)?.queryItems?.first { $0.name == "token" }?.value)
+        let expired = try #require(try await PasswordResetToken.query(on: app.db)
+            .filter(\.$user.$id == userID).first())
+        expired.expiresAt = Date().addingTimeInterval(-60)
+        try await expired.update(on: app.db)
+        let denied = try await request(app, .POST, "reset-password", body: ["token": expiredToken, "newPassword": oldPassword])
+        #expect(denied.status == .badRequest)
+        let unchangedLogin = try await request(app, .POST, "login", body: ["email": email, "password": newPassword])
+        #expect(unchangedLogin.status == .ok)
+    }
+
     private func verifyRateLimits(_ app: Application) async throws {
         let sql = try #require(app.db as? any SQLDatabase)
         try await sql.raw("DELETE FROM login_rate_limits").run()
@@ -159,9 +213,11 @@ struct AuthIntegrationTests {
         try await sql.raw("DELETE FROM login_rate_limits").run()
         for attempt in 1...31 {
             let response = try await app.sendRequest(.POST, "auth/login", headers: [
+                "Content-Type": "application/json",
                 "X-Forwarded-For": "192.0.2." + String(attempt)
             ])
-            #expect(response.status == (attempt <= 30 ? .badRequest : .tooManyRequests))
+            // Vapor returns 422 when the declared JSON body cannot be decoded.
+            #expect(response.status == (attempt <= 30 ? .unprocessableEntity : .tooManyRequests))
         }
     }
 

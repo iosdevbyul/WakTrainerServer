@@ -5,9 +5,11 @@ import JWT
 struct AuthController: RouteCollection {
     
     private let emailService: any EmailSending
+    private let passwordResetURLBase: String?
 
-    init(emailService: any EmailSending = EmailService()) {
+    init(emailService: any EmailSending = EmailService(), passwordResetURLBase: String? = nil) {
         self.emailService = emailService
+        self.passwordResetURLBase = passwordResetURLBase
     }
     
     func boot(routes: any RoutesBuilder) throws {
@@ -181,7 +183,7 @@ struct AuthController: RouteCollection {
         let tokenHash = AuthSession.hash(rawToken)
         let expiresAt = Date().addingTimeInterval(30 * 60)
 
-        guard let resetURLBase = Environment.get("PASSWORD_RESET_URL_BASE"),
+        guard let resetURLBase = passwordResetURLBase ?? Environment.get("PASSWORD_RESET_URL_BASE"),
               !resetURLBase.isEmpty else {
             throw Abort(
                 .internalServerError,

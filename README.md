@@ -95,12 +95,15 @@ swift build
 swift test
 ```
 
-기본 테스트는 DB를 사용하지 않습니다. PostgreSQL 통합 테스트는 `TEST_DATABASE_NAME` 설정 시에만 실행합니다. 데이터베이스 이름은 `waktrainer_test_`로 시작해야 하며, 반드시 비어 있는 일회용 DB를 사용하세요. 테스트는 테이블을 생성하고 종료 시 마이그레이션을 되돌립니다.
+기본 테스트는 DB를 사용하지 않습니다. `swift test`는 PostgreSQL 통합 테스트도 실행합니다. 앱이 `.env`를 읽은 뒤 `TEST_DATABASE_NAME`이 정확히 `waktrainer_test_auth`인지 검증하며, 누락되거나 다른 이름이면 skip 대신 실패합니다. 개발 DB `waktrainer`는 사용하지 않습니다. 반드시 테스트 전용 DB를 사용하세요. 테스트는 테이블을 생성하고 정상 종료 시 마이그레이션을 되돌립니다.
 
-선택 설정: `TEST_DATABASE_HOST` (127.0.0.1), `TEST_DATABASE_PORT` (55439), `TEST_DATABASE_USERNAME` (postgres), `TEST_DATABASE_PASSWORD`.
+선택 설정: `TEST_DATABASE_HOST` (127.0.0.1), `TEST_DATABASE_PORT` (5432), `TEST_DATABASE_USERNAME` (vapor), `TEST_DATABASE_PASSWORD`.
 
 ```sh
-TEST_DATABASE_NAME=waktrainer_test_auth swift test
+# .env에 TEST_DATABASE_NAME 및 TEST_DATABASE_* 접속 정보를 설정한 뒤 실행
+swift test
 ```
 
 통합 테스트는 회원가입·중복·로그인 실패, JWT 인증, 동시 refresh 단일 성공, 로그아웃 후 토큰 거부, 비밀번호 변경 후 모든 세션 폐기, 탈퇴 및 세션 삭제를 검증합니다.
+
+비밀번호 재설정 통합 테스트는 mock 메일 서비스와 실제 PostgreSQL을 사용해 토큰 생성, 재설정 성공, 사용·만료 토큰 거부, 기존 비밀번호 거부, 새 비밀번호 로그인 및 기존 세션 폐기를 검증합니다.
