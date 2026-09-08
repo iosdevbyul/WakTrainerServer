@@ -17,22 +17,19 @@ protocol EmailSending: Sendable {
 }
 
 struct EmailService: EmailSending {
-    private let apiKey: String
-
-    init() {
-        guard let apiKey = Environment.get("RESEND_API_KEY"),
-              !apiKey.isEmpty else {
-            fatalError("RESEND_API_KEY environment variable is required.")
-        }
-
-        self.apiKey = apiKey
-    }
-
     func sendPasswordResetEmail(
         to email: String,
         resetURL: String,
         on req: Request
     ) async throws {
+        guard let apiKey = Environment.get("RESEND_API_KEY"),
+              !apiKey.isEmpty else {
+            throw Abort(
+                .internalServerError,
+                reason: "RESEND_API_KEY environment variable is required."
+            )
+        }
+
         let body = ResendEmailRequest(
             from: "WakTrainer <onboarding@resend.dev>",
             to: [email],
@@ -49,6 +46,7 @@ struct EmailService: EmailSending {
             request.headers.bearerAuthorization = BearerAuthorization(
                 token: apiKey
             )
+
             request.headers.contentType = .json
             try request.content.encode(body)
         }

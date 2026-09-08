@@ -15,9 +15,10 @@ struct WakTrainerServerTests {
                 #expect(response.status == .unauthorized)
             }
             let forgot = try await app.sendRequest(.POST, "auth/forgot-password", beforeRequest: { req in
-                try req.content.encode(ForgotPasswordRequestDTO(email: "nobody@example.com"))
+                // Invalid input is rejected before accessing the database.
+                try req.content.encode(ForgotPasswordRequestDTO(email: "invalid-email"))
             })
-            #expect(forgot.status == .serviceUnavailable)
+            #expect(forgot.status == .badRequest)
         }
     }
 }

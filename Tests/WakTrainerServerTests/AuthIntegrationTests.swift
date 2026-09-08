@@ -30,10 +30,22 @@ struct AuthIntegrationTests {
                 database: name, tls: .disable
             )), as: .psql)
             await app.jwt.keys.add(hmac: .init(from: AuthSession.randomToken()), digestAlgorithm: .sha256)
-            app.migrations.add(CreateUserMigration(), CreateRefreshTokenMigration(), CreateLoginRateLimitMigration())
+            app.migrations.add(
+                CreateUserMigration(),
+                CreateRefreshTokenMigration(),
+                CreateLoginRateLimitMigration(),
+                CreatePasswordResetTokenMigration()
+            )
             try routes(app)
             try await app.autoMigrate()
         }) { app in
+            // Valid forgot-password requests query the database, even for unknown users.
+            let forgot = try await request(app, .POST, "forgot-password", body: [
+                "email": UUID().uuidString + "@example.com"
+            ])
+            #expect(forgot.status == .ok)
+            #expect(try forgot.content.decode(MessageResponseDTO.self).message == "비밀번호 재설정 안내 메일을 발송했습니다.")
+
             let email = UUID().uuidString + "@example.com"
             let password = String(AuthSession.randomToken().prefix(16))
             let newPassword = String(AuthSession.randomToken().prefix(16))
