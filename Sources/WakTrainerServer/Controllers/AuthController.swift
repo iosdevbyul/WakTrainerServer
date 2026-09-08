@@ -3,6 +3,13 @@ import Fluent
 import JWT
 
 struct AuthController: RouteCollection {
+    
+    private let emailService: any EmailSending
+
+    init(emailService: any EmailSending = EmailService()) {
+        self.emailService = emailService
+    }
+    
     func boot(routes: any RoutesBuilder) throws {
         let auth = routes.grouped("auth")
         auth.post("login", use: login)
@@ -197,7 +204,7 @@ struct AuthController: RouteCollection {
         try await resetToken.create(on: req.db)
 
         do {
-            try await EmailService().sendPasswordResetEmail(
+            try await emailService.sendPasswordResetEmail(
                 to: user.email,
                 resetURL: resetURL,
                 on: req

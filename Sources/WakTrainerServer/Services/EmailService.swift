@@ -8,7 +8,15 @@
 import Foundation
 import Vapor
 
-struct EmailService {
+protocol EmailSending: Sendable {
+    func sendPasswordResetEmail(
+        to email: String,
+        resetURL: String,
+        on req: Request
+    ) async throws
+}
+
+struct EmailService: EmailSending {
     private let apiKey: String
 
     init() {
@@ -41,7 +49,6 @@ struct EmailService {
             request.headers.bearerAuthorization = BearerAuthorization(
                 token: apiKey
             )
-
             request.headers.contentType = .json
             try request.content.encode(body)
         }
