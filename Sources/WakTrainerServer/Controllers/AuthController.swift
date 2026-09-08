@@ -10,7 +10,7 @@
 import Vapor
 
 struct AuthController: RouteCollection {
-    func boot(routes: RoutesBuilder) throws {
+    func boot(routes: any RoutesBuilder) throws {
         let auth = routes.grouped("auth")
         
         // POST /auth/login

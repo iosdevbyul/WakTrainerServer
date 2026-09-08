@@ -15,8 +15,9 @@
 
 x-shared_environment: &shared_environment
   LOG_LEVEL: ${LOG_LEVEL:-debug}
-  
+
 services:
+
   app:
     image: waktrainerserver:latest
     build:
@@ -25,5 +26,18 @@ services:
       <<: *shared_environment
     ports:
       - '8080:8080'
-    # user: '0' # uncomment to run as root for testing purposes even though Dockerfile defines 'vapor' user.
     command: ["serve", "--env", "production", "--hostname", "0.0.0.0", "--port", "8080"]
+
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: vapor
+      POSTGRES_PASSWORD: vapor
+      POSTGRES_DB: waktrainer
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
