@@ -147,7 +147,65 @@ struct AuthController: RouteCollection {
 
     @Sendable
     func forgotPassword(req: Request) async throws -> MessageResponseDTO {
-        _ = try req.content.decode(ForgotPasswordRequestDTO.self)
-        throw Abort(.serviceUnavailable, reason: "비밀번호 재설정 메일 서비스가 아직 설정되지 않았습니다.")
+        let body = try req.content.decode(ForgotPasswordRequestDTO.self)
+
+        guard body.email.utf8.count <= 254,
+              body.email.contains("@"),
+              body.email.contains(".") else {
+            throw Abort(
+                .badRequest,
+                reason: "올바른 이메일 형식을 입력해주세요."
+            )
+        }
+
+        let responseMessage = "비밀번호 재설정 안내 메일을 발송했습니다."
+
+        guard let user = try await User.query(on: req.db)
+            .filter(\.$email == body.email)
+            .first()
+        else {
+            return .init(message: responseMessage)
+        }
+
+        let userID = try user.requireID()
+
+        let rawToken = AuthSession.randomToken()
+        let tokenHash = AuthSession.hash(rawToken)
+        let expiresAt = Date().addingTimeInterval(30 * 60)
+
+        guard let resetURLBase = Environment.get("PASSWORD_RESET_URL_BASE"),
+              !resetURLBase.isEmpty else {
+            throw Abort(
+                .internalServerError,
+                reason: "PASSWORD_RESET_URL_BASE environment variable is required."
+            )
+        }
+
+        let resetURL = "\(resetURLBase)?token=\(rawToken)"
+
+        try await PasswordResetToken.query(on: req.db)
+            .filter(\.$user.$id == userID)
+            .delete()
+
+        let resetToken = PasswordResetToken(
+            userID: userID,
+            tokenHash: tokenHash,
+            expiresAt: expiresAt
+        )
+
+        try await resetToken.create(on: req.db)
+
+        do {
+            try await EmailService().sendPasswordResetEmail(
+                to: user.email,
+                resetURL: resetURL,
+                on: req
+            )
+        } catch {
+            try? await resetToken.delete(on: req.db)
+            throw error
+        }
+
+        return .init(message: responseMessage)
     }
 }
