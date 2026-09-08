@@ -5,16 +5,21 @@ import JWT
 import JWTKit
 
 func configure(_ app: Application) async throws {
-    guard let databasePassword = Environment.get("DATABASE_PASSWORD"), !databasePassword.isEmpty else {
-        throw Abort(.internalServerError, reason: "DATABASE_PASSWORD environment variable is required.")
+    let databasePrefix = app.environment == .testing ? "TEST_DATABASE_" : "DATABASE_"
+    let databaseName = Environment.get(databasePrefix + "NAME") ?? "waktrainer"
+    if app.environment == .testing, databaseName != "waktrainer_test_auth" {
+        throw Abort(.internalServerError, reason: "Testing requires TEST_DATABASE_NAME=waktrainer_test_auth.")
+    }
+    guard let databasePassword = Environment.get(databasePrefix + "PASSWORD"), !databasePassword.isEmpty else {
+        throw Abort(.internalServerError, reason: "\(databasePrefix)PASSWORD environment variable is required.")
     }
 
     let postgresConfiguration = SQLPostgresConfiguration(
-        hostname: Environment.get("DATABASE_HOST") ?? "127.0.0.1",
-        port: Environment.get("DATABASE_PORT").flatMap(Int.init) ?? 5432,
-        username: Environment.get("DATABASE_USERNAME") ?? "vapor",
+        hostname: Environment.get(databasePrefix + "HOST") ?? "127.0.0.1",
+        port: Environment.get(databasePrefix + "PORT").flatMap(Int.init) ?? 5432,
+        username: Environment.get(databasePrefix + "USERNAME") ?? "vapor",
         password: databasePassword,
-        database: Environment.get("DATABASE_NAME") ?? "waktrainer",
+        database: databaseName,
         tls: .disable
     )
 
