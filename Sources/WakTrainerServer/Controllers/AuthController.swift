@@ -37,14 +37,55 @@ struct AuthController: RouteCollection {
     @Sendable
     func login(req: Request) async throws -> SessionResponseDTO {
         let body = try req.content.decode(AuthRequestDTO.self)
-        
-        let mockUser = UserResponseDTO(
-            id: UUID().uuidString,
-            email: body.email
+
+        guard body.email.contains("@"),
+              body.email.contains(".") else {
+            throw Abort(
+                .badRequest,
+                reason: "올바른 이메일 형식을 입력해주세요."
+            )
+        }
+
+        guard (7...20).contains(body.password.count) else {
+            throw Abort(
+                .badRequest,
+                reason: "비밀번호는 7자 이상 20자 이하로 입력해주세요."
+            )
+        }
+
+        guard let user = try await User.query(on: req.db)
+            .filter(\.$email == body.email)
+            .first()
+        else {
+            throw Abort(
+                .unauthorized,
+                reason: "이메일 또는 비밀번호가 올바르지 않습니다."
+            )
+        }
+
+        let isPasswordValid = try await req.password.async.verify(
+            body.password,
+            created: user.passwordHash
         )
-        
+
+        guard isPasswordValid else {
+            throw Abort(
+                .unauthorized,
+                reason: "이메일 또는 비밀번호가 올바르지 않습니다."
+            )
+        }
+
+        guard let userID = user.id else {
+            throw Abort(.internalServerError)
+        }
+
+        let responseUser = UserResponseDTO(
+            id: userID.uuidString,
+            email: user.email
+        )
+
         return SessionResponseDTO(
-            user: mockUser,
+            user: responseUser,
             accessToken: "access_token_\(UUID().uuidString)",
             refreshToken: "refresh_token_\(UUID().uuidString)"
         )
