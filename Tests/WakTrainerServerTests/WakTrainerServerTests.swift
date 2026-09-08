@@ -4,35 +4,20 @@ import Testing
 
 @Suite("App Tests")
 struct WakTrainerServerTests {
-    @Test("Test Hello World Route")
-    func helloWorld() async throws {
-        try await withApp(configure: configure) { app in
-            try await app.testing().test(.GET, "hello", afterResponse: { res async in
-                #expect(res.status == .ok)
-                #expect(res.body.string == "Hello, world!")
+    @Test("Public route and protected routes without authentication")
+    func routesWithoutAuthentication() async throws {
+        try await withApp(configure: { app in try routes(app) }) { app in
+            let hello = try await app.sendRequest(.GET, "hello")
+            #expect(hello.status == .ok)
+            #expect(hello.body.string == "Hello, world!")
+            for (method, path) in [(HTTPMethod.GET, "me"), (.POST, "logout"), (.DELETE, "withdraw"), (.POST, "change-password")] {
+                let response = try await app.sendRequest(method, "auth/" + path)
+                #expect(response.status == .unauthorized)
+            }
+            let forgot = try await app.sendRequest(.POST, "auth/forgot-password", beforeRequest: { req in
+                try req.content.encode(ForgotPasswordRequestDTO(email: "nobody@example.com"))
             })
-        }
-    }
-    
-    @Test("Test Change Password Route")
-    func changePassword() async throws {
-        try await withApp(configure: configure) { app in
-            try await app.testing().test(
-                .POST,
-                "auth/change-password",
-                beforeRequest: { req in
-                    req.headers.contentType = .json
-
-                    try req.content.encode([
-                        "currentPassword": "old-password",
-                        "newPassword": "new-password"
-                    ])
-                },
-                afterResponse: { res async in
-                    #expect(res.status == .ok)
-                    #expect(res.body.string.contains("Password changed successfully."))
-                }
-            )
+            #expect(forgot.status == .serviceUnavailable)
         }
     }
 }

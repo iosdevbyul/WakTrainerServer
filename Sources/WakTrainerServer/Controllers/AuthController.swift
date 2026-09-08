@@ -1,190 +1,151 @@
-//
-//  AuthController.swift
-//  WakTrainerServer
-//
-//  Created by COMATOKI on 2026-08-28.
-//
-
-// Sources/WakTrainerServer/Controllers/AuthController.swift
-
 import Vapor
 import Fluent
+import JWT
 
 struct AuthController: RouteCollection {
     func boot(routes: any RoutesBuilder) throws {
         let auth = routes.grouped("auth")
-        
-        // POST /auth/login
         auth.post("login", use: login)
-        
-        // POST /auth/signup
         auth.post("signup", use: signUp)
-        
-        // POST /auth/logout
+        auth.post("refresh", use: refresh)
+        auth.get("me", use: me)
         auth.post("logout", use: logout)
-        
-        // DELETE /auth/withdraw
         auth.delete("withdraw", use: withdraw)
-        
-        // POST /auth/forgot-password
         auth.post("forgot-password", use: forgotPassword)
-        
-        // POST /auth/change-password
         auth.post("change-password", use: changePassword)
     }
 
-    // POST /auth/login
+    private func validate(email: String, password: String) throws {
+        guard email.utf8.count <= 254, email.contains("@"), email.contains(".") else {
+            throw Abort(.badRequest, reason: "올바른 이메일 형식을 입력해주세요.")
+        }
+        try validate(password: password)
+    }
+
+    private func validate(password: String) throws {
+        // bcrypt uses at most 72 bytes, including for multibyte characters.
+        guard (7...20).contains(password.count), password.utf8.count <= 72 else {
+            throw Abort(.badRequest, reason: "비밀번호는 7자 이상 20자 이하, UTF-8 기준 72바이트 이하로 입력해주세요.")
+        }
+    }
+
     @Sendable
     func login(req: Request) async throws -> SessionResponseDTO {
         let body = try req.content.decode(AuthRequestDTO.self)
-
-        guard body.email.contains("@"),
-              body.email.contains(".") else {
-            throw Abort(
-                .badRequest,
-                reason: "올바른 이메일 형식을 입력해주세요."
-            )
+        try validate(email: body.email, password: body.password)
+        guard let existing = try await User.query(on: req.db).filter(\.$email == body.email).first() else {
+            throw Abort(.unauthorized, reason: "이메일 또는 비밀번호가 올바르지 않습니다.")
         }
-
-        guard (7...20).contains(body.password.count) else {
-            throw Abort(
-                .badRequest,
-                reason: "비밀번호는 7자 이상 20자 이하로 입력해주세요."
-            )
+        let userID = try existing.requireID()
+        return try await req.db.transaction { db in
+            let user = try await AuthSession.lockUser(userID, on: db)
+            guard try await req.password.async.verify(body.password, created: user.passwordHash) else {
+                throw Abort(.unauthorized, reason: "이메일 또는 비밀번호가 올바르지 않습니다.")
+            }
+            return try await AuthSession.issue(for: user, request: req, on: db)
         }
-
-        guard let user = try await User.query(on: req.db)
-            .filter(\.$email == body.email)
-            .first()
-        else {
-            throw Abort(
-                .unauthorized,
-                reason: "이메일 또는 비밀번호가 올바르지 않습니다."
-            )
-        }
-
-        let isPasswordValid = try await req.password.async.verify(
-            body.password,
-            created: user.passwordHash
-        )
-
-        guard isPasswordValid else {
-            throw Abort(
-                .unauthorized,
-                reason: "이메일 또는 비밀번호가 올바르지 않습니다."
-            )
-        }
-
-        guard let userID = user.id else {
-            throw Abort(.internalServerError)
-        }
-
-        let responseUser = UserResponseDTO(
-            id: userID.uuidString,
-            email: user.email
-        )
-
-        return SessionResponseDTO(
-            user: responseUser,
-            accessToken: "access_token_\(UUID().uuidString)",
-            refreshToken: "refresh_token_\(UUID().uuidString)"
-        )
     }
 
-    // POST /auth/signup
     @Sendable
     func signUp(req: Request) async throws -> SessionResponseDTO {
         let body = try req.content.decode(AuthRequestDTO.self)
-
-        guard (7...20).contains(body.password.count) else {
-            throw Abort(
-                .badRequest,
-                reason: "비밀번호는 7자 이상 20자 이하로 입력해주세요."
-            )
+        try validate(email: body.email, password: body.password)
+        guard try await User.query(on: req.db).filter(\.$email == body.email).first() == nil else {
+            throw Abort(.conflict, reason: "이미 사용 중인 이메일입니다.")
         }
-
-        guard body.email.contains("@"),
-              body.email.contains(".") else {
-            throw Abort(
-                .badRequest,
-                reason: "올바른 이메일 형식을 입력해주세요."
-            )
-        }
-
-        let existingUser = try await User.query(on: req.db)
-            .filter(\.$email == body.email)
-            .first()
-
-        if existingUser != nil {
-            throw Abort(
-                .conflict,
-                reason: "이미 사용 중인 이메일입니다."
-            )
-        }
-
         let passwordHash = try await req.password.async.hash(body.password)
-
-        let user = User(
-            email: body.email,
-            passwordHash: passwordHash
-        )
-
-        try await user.create(on: req.db)
-
-        guard let userID = user.id else {
-            throw Abort(.internalServerError)
+        do {
+            return try await req.db.transaction { db in
+                let user = User(email: body.email, passwordHash: passwordHash)
+                try await user.create(on: db)
+                return try await AuthSession.issue(for: user, request: req, on: db)
+            }
+        } catch let error as any DatabaseError where error.isConstraintFailure {
+            // The UNIQUE constraint also protects concurrent signups.
+            throw Abort(.conflict, reason: "이미 사용 중인 이메일입니다.")
         }
-
-        let newUser = UserResponseDTO(
-            id: userID.uuidString,
-            email: user.email
-        )
-
-        return SessionResponseDTO(
-            user: newUser,
-            accessToken: "access_token_\(UUID().uuidString)",
-            refreshToken: "refresh_token_\(UUID().uuidString)"
-        )
     }
 
-    // POST /auth/logout
+    @Sendable
+    func refresh(req: Request) async throws -> SessionResponseDTO {
+        let body = try req.content.decode(RefreshRequestDTO.self)
+        guard body.refreshToken.utf8.count == 64 else { throw Abort(.unauthorized) }
+        let hash = AuthSession.hash(body.refreshToken)
+        guard let existing = try await RefreshToken.query(on: req.db).filter(\.$tokenHash == hash).first() else {
+            throw Abort(.unauthorized)
+        }
+        let userID = existing.$user.id
+        return try await req.db.transaction { db in
+            let user = try await AuthSession.lockUser(userID, on: db)
+            guard let session = try await RefreshToken.query(on: db).filter(\.$tokenHash == hash).first(),
+                  session.expiresAt > Date() else { throw Abort(.unauthorized) }
+            try await session.delete(on: db)
+            return try await AuthSession.issue(for: user, request: req, on: db)
+        }
+    }
+
+    @Sendable
+    func me(req: Request) async throws -> UserResponseDTO {
+        let payload = try await AuthSession.payload(from: req)
+        _ = try await AuthSession.validate(payload, on: req.db)
+        guard let user = try await User.find(UUID(uuidString: payload.subject.value), on: req.db) else {
+            throw Abort(.unauthorized)
+        }
+        return .init(id: try user.requireID().uuidString, email: user.email)
+    }
+
     @Sendable
     func logout(req: Request) async throws -> MessageResponseDTO {
-        // TODO: AccessToken/RefreshToken 무효화 로직 추가 예정
-        return MessageResponseDTO(message: "Successfully logged out.")
+        let payload = try await AuthSession.payload(from: req)
+        guard let userID = UUID(uuidString: payload.subject.value) else { throw Abort(.unauthorized) }
+        try await req.db.transaction { db in
+            _ = try await AuthSession.lockUser(userID, on: db)
+            let session = try await AuthSession.validate(payload, on: db)
+            try await session.delete(on: db)
+        }
+        return .init(message: "Successfully logged out.")
     }
 
-    // DELETE /auth/withdraw
     @Sendable
     func withdraw(req: Request) async throws -> MessageResponseDTO {
-        // TODO: AccessToken 검증 및 DB 사용자 삭제 로직 추가 예정
-        return MessageResponseDTO(message: "Account withdrawn successfully.")
+        let payload = try await AuthSession.payload(from: req)
+        guard let userID = UUID(uuidString: payload.subject.value) else { throw Abort(.unauthorized) }
+        try await req.db.transaction { db in
+            let user = try await AuthSession.lockUser(userID, on: db)
+            _ = try await AuthSession.validate(payload, on: db)
+            // The foreign key cascades deletion to every session for this user.
+            try await user.delete(on: db)
+        }
+        return .init(message: "Account withdrawn successfully.")
     }
 
-    // POST /auth/forgot-password
-    @Sendable
-    func forgotPassword(req: Request) async throws -> MessageResponseDTO {
-        let body = try req.content.decode(ForgotPasswordRequestDTO.self)
-        
-        return MessageResponseDTO(message: "Password reset email sent to \(body.email).")
-    }
-    
-    // POST /auth/change-password
     @Sendable
     func changePassword(req: Request) async throws -> MessageResponseDTO {
+        let payload = try await AuthSession.payload(from: req)
         let body = try req.content.decode(ChangePasswordRequestDTO.self)
-
-        guard !body.currentPassword.isEmpty,
-              !body.newPassword.isEmpty else {
-            throw Abort(
-                .badRequest,
-                reason: "Passwords must not be empty."
-            )
+        try validate(password: body.newPassword)
+        guard !body.currentPassword.isEmpty, body.currentPassword.utf8.count <= 72,
+              body.currentPassword != body.newPassword else {
+            throw Abort(.badRequest, reason: "현재 비밀번호와 다른 새 비밀번호를 입력해주세요.")
         }
+        guard let userID = UUID(uuidString: payload.subject.value) else { throw Abort(.unauthorized) }
+        let passwordHash = try await req.password.async.hash(body.newPassword)
+        try await req.db.transaction { db in
+            let user = try await AuthSession.lockUser(userID, on: db)
+            _ = try await AuthSession.validate(payload, on: db)
+            guard try await req.password.async.verify(body.currentPassword, created: user.passwordHash) else {
+                throw Abort(.unauthorized, reason: "현재 비밀번호가 올바르지 않습니다.")
+            }
+            user.passwordHash = passwordHash
+            try await user.update(on: db)
+            try await RefreshToken.query(on: db).filter(\.$user.$id == userID).delete()
+        }
+        return .init(message: "Password changed successfully. Please log in again.")
+    }
 
-        return MessageResponseDTO(
-            message: "Password changed successfully."
-        )
+    @Sendable
+    func forgotPassword(req: Request) async throws -> MessageResponseDTO {
+        _ = try req.content.decode(ForgotPasswordRequestDTO.self)
+        throw Abort(.serviceUnavailable, reason: "비밀번호 재설정 메일 서비스가 아직 설정되지 않았습니다.")
     }
 }
-

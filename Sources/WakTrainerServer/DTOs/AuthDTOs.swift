@@ -9,6 +9,10 @@
 
 import Vapor
 
+struct RefreshRequestDTO: Content {
+    let refreshToken: String
+}
+
 // MARK: - Request DTOs
 /// iOS 클라이언트의 LoginRequestDTO / SignUpRequestDTO와 매핑
 struct AuthRequestDTO: Content {
