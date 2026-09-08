@@ -8,6 +8,7 @@
 // Sources/WakTrainerServer/Controllers/AuthController.swift
 
 import Vapor
+import Fluent
 
 struct AuthController: RouteCollection {
     func boot(routes: any RoutesBuilder) throws {
@@ -53,12 +54,51 @@ struct AuthController: RouteCollection {
     @Sendable
     func signUp(req: Request) async throws -> SessionResponseDTO {
         let body = try req.content.decode(AuthRequestDTO.self)
-        
-        let newUser = UserResponseDTO(
-            id: UUID().uuidString,
-            email: body.email
+
+        guard (7...20).contains(body.password.count) else {
+            throw Abort(
+                .badRequest,
+                reason: "비밀번호는 7자 이상 20자 이하로 입력해주세요."
+            )
+        }
+
+        guard body.email.contains("@"),
+              body.email.contains(".") else {
+            throw Abort(
+                .badRequest,
+                reason: "올바른 이메일 형식을 입력해주세요."
+            )
+        }
+
+        let existingUser = try await User.query(on: req.db)
+            .filter(\.$email == body.email)
+            .first()
+
+        if existingUser != nil {
+            throw Abort(
+                .conflict,
+                reason: "이미 사용 중인 이메일입니다."
+            )
+        }
+
+        let passwordHash = try await req.password.async.hash(body.password)
+
+        let user = User(
+            email: body.email,
+            passwordHash: passwordHash
         )
-        
+
+        try await user.create(on: req.db)
+
+        guard let userID = user.id else {
+            throw Abort(.internalServerError)
+        }
+
+        let newUser = UserResponseDTO(
+            id: userID.uuidString,
+            email: user.email
+        )
+
         return SessionResponseDTO(
             user: newUser,
             accessToken: "access_token_\(UUID().uuidString)",
