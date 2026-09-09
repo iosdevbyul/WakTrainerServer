@@ -1,109 +1,486 @@
 # WakTrainerServer
 
-**한국어** | [English](README.en.md)
+**English** | [한국어](README.ko.md)
 
-Vapor / Swift 6.3 / PostgreSQL 기반 인증 서버.
+WakTrainerServer is an authentication backend built with Vapor, Swift 6.3, and PostgreSQL.
 
-## 빌드 환경
+It currently supports:
 
-Swift 6.3과 macOS 13 이상을 기준으로 개발합니다. 현재 JWT 패키지는 `vapor/jwt 5.1.2`, `jwt-kit 5.6.0`을 사용합니다. JWTKit 5.7.0의 경고 설정이 Xcode의 외부 패키지 경고 숨김 옵션과 충돌하므로 5.6.0으로 고정했습니다.
+- User registration
+- Login and logout
+- JWT access tokens
+- Refresh-token rotation
+- Current user lookup
+- Password changes
+- Password reset by email
+- Email ownership verification
+- Account deletion
+- Login rate limiting
+- Shared rate limiting for user-triggered email delivery
 
-## 로컬 실행
+## Requirements
 
-환경변수 `JWT_SECRET`, `DATABASE_PASSWORD`가 필요합니다. 비밀값은 Git에 저장하지 마세요.
-`JWT_SECRET`은 `openssl rand -base64 48`로 생성할 수 있습니다.
-`DATABASE_PASSWORD`에는 기존 PostgreSQL에 설정된 비밀번호를 지정합니다.
-기존 Docker volume을 사용하는 경우 환경변수 변경만으로 DB 비밀번호가 변경되지는 않습니다.
+- Swift 6.3
+- macOS 13 or later
+- PostgreSQL
+- Resend credentials for actual email delivery
 
-선택 환경변수:
+The local Docker Compose environment uses PostgreSQL 16.
 
-| 변수 | 기본값 |
+The Dockerfile builds with `swift:6.3-noble`.
+
+JWTKit is currently pinned to 5.6.0 because the warnings-as-errors configuration in 5.7.0 conflicts with Xcode dependency warning suppression.
+
+See [Package.swift](Package.swift) and [Package.resolved](Package.resolved) for the currently resolved dependencies.
+
+## Local setup
+
+Configure the required values through process environment variables or a local `.env` file.
+
+Do not commit secrets.
+
+A JWT secret can be generated with:
+
+```sh
+openssl rand -base64 48
+```
+
+### Environment variables
+
+| Variable | Requirement / default |
 | --- | --- |
-| DATABASE_HOST | 127.0.0.1 (Docker app에서는 db) |
-| DATABASE_PORT | 5432 |
-| DATABASE_USERNAME | vapor |
-| DATABASE_NAME | waktrainer |
+| `JWT_SECRET` | Required |
+| `DATABASE_PASSWORD` | Required |
+| `DATABASE_HOST` | Defaults to `127.0.0.1` |
+| `DATABASE_PORT` | Defaults to `5432` |
+| `DATABASE_USERNAME` | Defaults to `vapor` |
+| `DATABASE_NAME` | Defaults to `waktrainer` |
+| `RESEND_API_KEY` | Required for actual email delivery |
+| `PASSWORD_RESET_URL_BASE` | Base URL used for password-reset links |
+| `EMAIL_VERIFICATION_URL_BASE` | Base URL used for email-verification links |
+| `EMAIL_TRUST_RAILWAY_PROXY` | Enables trusted Railway `X-Real-IP` handling when set to `true` |
 
-위 환경변수를 설정한 터미널에서 실행합니다.
+Example frontend destinations:
+
+```text
+https://your-frontend.example/reset-password
+https://your-frontend.example/verify-email
+```
+
+The password-reset URL should currently be configured without an existing query string or fragment because the server appends the reset token to the configured base URL.
+
+## Running locally
+
+Start PostgreSQL:
 
 ```sh
 docker compose up -d db
+```
+
+Apply migrations:
+
+```sh
 swift run WakTrainerServer migrate --yes
+```
+
+Start the server:
+
+```sh
 swift run WakTrainerServer serve --hostname 127.0.0.1 --port 8080
 ```
 
-이번 변경에는 `CreateRefreshTokenMigration`이 추가되었습니다. 기존 개발 DB에 마이그레이션을 적용한 뒤 서버를 시작해야 합니다. 테스트는 별도 DB에서 수행하며 개발 DB에 마이그레이션을 자동 적용하지 않습니다.
+Changing `DATABASE_PASSWORD` in `.env` does not automatically update credentials stored in an existing PostgreSQL Docker volume.
 
-## 인증 API
+The Dockerfile and Docker Compose startup configuration do not automatically run database migrations.
 
-JSON 요청에는 `Content-Type: application/json`을 사용합니다.
-인증이 필요한 요청에는 `Authorization: Bearer <accessToken>`을 지정합니다.
+## Email delivery
 
-| 메서드 / 경로 | 요청 | 동작 |
+Email delivery is implemented through the `EmailSending` abstraction and the Resend provider.
+
+User-triggered email flows pass through the shared email rate limiter before delivery.
+
+Currently supported email flows include:
+
+- Password reset
+- Email verification
+- Email verification resend
+
+The development sender currently uses Resend's onboarding sender. Configure a verified sender and domain before using a production mail identity.
+
+## Database migrations
+
+Apply all pending migrations before starting an updated server.
+
+The current migration registration order is:
+
+1. `CreateUserMigration`
+2. `CreateRefreshTokenMigration`
+3. `CreateLoginRateLimitMigration`
+4. `CreatePasswordResetTokenMigration`
+5. `CreateEmailRateLimitMigration`
+6. `AddEmailVerificationMigration`
+
+`AddEmailVerificationMigration` adds the user's email-verification state and the email-verification token table.
+
+Existing users receive an initial unverified state but remain able to authenticate.
+
+Tests use a separate PostgreSQL database and do not migrate the development database.
+
+## Authentication API
+
+Use:
+
+```http
+Content-Type: application/json
+```
+
+Protected endpoints use:
+
+```http
+Authorization: Bearer <accessToken>
+```
+
+### Endpoints
+
+| Method | Path | Description |
 | --- | --- | --- |
-| POST /auth/signup | email, password | 사용자 생성 및 토큰 발급 |
-| POST /auth/login | email, password | 비밀번호 검증 및 토큰 발급 |
-| POST /auth/refresh | refreshToken | 기존 세션을 폐기하고 새 토큰 쌍 발급 |
-| GET /auth/me | Bearer | 사용자 id, email 반환 |
-| POST /auth/logout | Bearer | 현재 세션 폐기 |
-| POST /auth/change-password | Bearer + currentPassword, newPassword | 비밀번호 변경 및 모든 세션 폐기 |
-| DELETE /auth/withdraw | Bearer | 사용자 및 모든 세션 삭제 |
-| POST /auth/forgot-password | email | 메일 서비스 미설정으로 503 반환 |
+| POST | `/auth/signup` | Create a user and issue a session |
+| POST | `/auth/login` | Authenticate and issue a session |
+| POST | `/auth/refresh` | Rotate the refresh token and session |
+| GET | `/auth/me` | Return the authenticated user |
+| POST | `/auth/logout` | Revoke the current session |
+| POST | `/auth/change-password` | Change the password and revoke sessions |
+| DELETE | `/auth/withdraw` | Delete the user account |
+| POST | `/auth/forgot-password` | Request a password-reset email |
+| POST | `/auth/reset-password` | Reset the password using a reset token |
+| POST | `/auth/verify-email` | Verify email ownership using a verification token |
+| POST | `/auth/resend-verification-email` | Request another verification email |
 
-Access token은 15분 만료의 JWT이며 `sub`, `exp`, `sid`를 포함합니다.
-Refresh token은 시스템 난수로 만든 32바이트 opaque token(64자리 hex)이며 DB에는 SHA-256 해시만 저장합니다. 새 refresh token의 유효기간은 발급부터 30일입니다.
+### Session response
 
-Refresh 성공 시 클라이언트는 access token과 refresh token을 모두 교체해야 합니다. 동일 토큰으로 병렬 refresh 요청을 보내지 마세요. 이전 refresh token과 연결된 access token은 즉시 무효화됩니다.
-로그아웃은 현재 세션만 폐기하며 다른 기기의 로그인은 유지합니다.
-비밀번호 변경 후에는 모든 기기에서 다시 로그인해야 합니다.
-기존 `sid` 없는 JWT와 mock refresh token은 더 이상 인증에 사용할 수 없으므로 다시 로그인해야 합니다.
+Signup, login, and refresh return the same session structure:
 
-비밀번호 재설정은 미완료입니다. 메일 제공자와 발신 주소를 정한 뒤 발송, 일회용 재설정 토큰 저장·검증 및 reset-password API를 연결해야 합니다. 현재는 이메일 발송 성공을 가장하지 않고 503을 반환합니다.
+```json
+{
+  "user": {
+    "id": "<user UUID>",
+    "email": "user@example.com",
+    "isEmailVerified": false
+  },
+  "accessToken": "<JWT>",
+  "refreshToken": "<opaque token>"
+}
+```
 
-## 로그인 요청 제한
+Other successful mutation endpoints generally return:
 
-`POST /auth/login`은 PostgreSQL의 `login_rate_limits` 테이블로 요청 횟수를 공유합니다. `CreateLoginRateLimitMigration`을 적용해야 합니다.
+```json
+{
+  "message": "..."
+}
+```
 
-- 직접 연결된 IP당 60초에 30회, 이메일당 15분에 10회를 허용합니다.
-- 로그인 성공·실패 모두 집계하며, 성공했다고 카운터를 초기화하지 않습니다. IP 제한은 JSON 해석 전에, 이메일 제한은 입력 검증 후 계정 조회와 bcrypt 검증 전에 적용합니다.
-- 초과하면 `429 Too Many Requests`와 초 단위 `Retry-After`를 반환합니다. 고정된 기간이 지나면 다시 허용하며 초과 요청이 기간을 연장하지 않습니다.
-- 이메일 제한 키에만 앞뒤 공백 제거와 소문자 변환을 적용합니다. 실제 회원가입 저장 및 로그인 조회 정책은 아직 대소문자를 구분합니다.
-- IP·이메일 원문 대신 SHA-256 해시를 저장합니다. 원문을 추측해 해시를 비교할 수 있으므로 익명 데이터로 취급하면 안 됩니다.
-- DB의 원자적 upsert와 DB 시각을 사용해 여러 인스턴스와 동시 요청에서 제한을 공유합니다. DB 오류 시 로그인을 통과시키지 않습니다.
-- 만료된 항목은 로그인 요청마다 최대 100개씩 정리합니다.
+Errors use Vapor's standard error response format.
 
-`X-Forwarded-For` 등 전달 헤더는 신뢰하지 않습니다. 프록시 뒤에서는 프록시 IP 단위로 제한되므로, 배포 전에 신뢰할 프록시와 실제 클라이언트 IP 전달 정책을 구현해야 합니다. IP를 알 수 없는 요청은 하나의 공통 제한을 공유합니다.
+Some API messages are currently Korean. The README language does not affect API response language.
 
-이 제한값은 초기 정책입니다. 이메일 단위 제한은 타인이 해당 이메일의 로그인을 일시적으로 막을 수 있으므로 실제 사용량과 차단 지표를 관찰하며 조정해야 합니다. 회원가입·토큰 갱신 등 다른 API의 제한과 인프라 수준의 트래픽 방어는 별도 작업입니다. 참고: [OWASP Login Throttling](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html#login-throttling).
+## Input rules
 
-## 인터넷 공개 전 남은 작업
+Passwords must contain:
 
-현재 Docker Compose와 PostgreSQL `tls: .disable` 설정은 로컬 개발 기준입니다. 다음 항목을 완료하기 전에는 운영 환경 준비가 끝난 것으로 간주하지 않습니다.
+- 7 to 20 characters
+- No more than 72 UTF-8 bytes
 
-- HTTPS 종료 지점과 인증서 갱신, 신뢰할 프록시 및 클라이언트 IP 정책 설정
-- 운영 PostgreSQL TLS와 서버 인증서/호스트명 검증, DB 네트워크 접근 제한
-- Secret Manager 또는 배포 환경을 통한 비밀값 주입과 교체 정책
-- 비밀번호·토큰을 기록하지 않는 로그 정책 및 오류율·로그인 실패·429 모니터링/알림
-- 이메일 유효성 검사 강화 및 소문자/공백 정책 결정, 기존 계정 충돌 검사 후 마이그레이션
-- Swift/Xcode/JWT 업데이트 시 JWTKit 5.6.0 pin 재검토와 Xcode/터미널 빌드·인증 회귀 테스트
-- 비밀번호 재설정 메일 서비스 및 일회용 재설정 토큰 구현
+Email validation currently checks:
 
-## 검증
+- Maximum 254 UTF-8 bytes
+- Presence of `@`
+- Presence of `.`
+
+Duplicate email registration returns HTTP `409`.
+
+Email normalization used by rate limiting is separate from account-storage behavior.
+
+## Sessions
+
+Access tokens:
+
+- JWT-based
+- Expire after approximately 15 minutes
+- Include `sub`, `exp`, and `sid`
+- Require a valid backing database session
+
+Refresh tokens:
+
+- Use 32 random bytes
+- Are encoded as 64 hexadecimal characters
+- Are stored only as SHA-256 hashes
+- Expire after approximately 30 days
+- Are rotated after successful refresh
+
+After refresh, clients must replace both the access token and refresh token.
+
+Concurrent refresh requests using the same refresh token allow only one successful consumer.
+
+Logout revokes only the current session.
+
+Password change and password reset revoke all active sessions.
+
+JWTs without a valid session identifier are not accepted.
+
+### Email verification state
+
+Unverified users can still:
+
+- Sign up
+- Log in
+- Refresh sessions
+- Use the normal authenticated session flow
+
+Email verification does not create or revoke sessions.
+
+Clients can call:
+
+```http
+GET /auth/me
+```
+
+to refresh the user's `isEmailVerified` state.
+
+Future features that require verified ownership should validate the user's verification state on the server.
+
+## Password reset
+
+Password-reset tokens:
+
+- Use 32 random bytes
+- Are stored only as SHA-256 hashes
+- Expire after approximately 30 minutes
+- Are single-use
+- Are replaced when a new reset token is issued
+
+A successful reset:
+
+- Updates the password
+- Removes outstanding reset tokens
+- Revokes all active sessions
+
+Unknown accounts and rate-limited forgot-password requests use the same successful outward response to reduce account-enumeration risk.
+
+A generic success response does not guarantee inbox delivery.
+
+## Email verification
+
+Email-verification tokens:
+
+- Use 32 random bytes
+- Are stored only as SHA-256 hashes
+- Expire after approximately 24 hours
+- Are single-use
+- Are replaced when a new verification token is successfully issued
+
+Verification is performed through:
+
+```http
+POST /auth/verify-email
+```
+
+This endpoint does not require an authenticated session.
+
+Successful verification sets:
+
+```text
+isEmailVerified = true
+```
+
+Invalid, expired, replaced, reused, or otherwise unusable verification tokens are rejected.
+
+Verification email resend uses:
+
+```http
+POST /auth/resend-verification-email
+```
+
+The outward response intentionally does not reveal whether:
+
+- The account exists
+- The account is already verified
+- The request was rate limited
+- Delivery was suppressed
+
+This reduces account-enumeration risk.
+
+Verification links should point to a frontend or application entry point that extracts the token and submits it to the verification endpoint.
+
+For example:
+
+```text
+waktrainer://verify-email?token=...
+```
+
+A production HTTPS frontend may also hand off to the app or use Universal Links.
+
+## Rate limiting
+
+### Login
+
+Login attempts use PostgreSQL-backed counters.
+
+Current policy:
+
+- 30 attempts per IP per minute
+- 10 attempts per email per 15 minutes
+
+Both successful and failed attempts count toward the limit.
+
+Exceeded limits return HTTP `429`.
+
+### User-triggered email delivery
+
+Email requests use a shared PostgreSQL-backed limiter.
+
+The limiter combines several abuse signals:
+
+- Recipient email
+- Client ID
+- IP address
+- Email action
+- Global send volume
+
+Identifiers used for limiter storage are SHA-256 hashed.
+
+`X-Client-ID` is optional and is treated only as an abuse-prevention signal, not as authentication.
+
+Current detailed limits are documented in:
+
+[docs/email-rate-limits.md](docs/email-rate-limits.md)
+
+The server currently supports rate-limit actions including:
+
+- `passwordReset`
+- `signUpVerification`
+
+`emailChangeVerification` is reserved as an extension point for future email-change support.
+
+### Railway proxy handling
+
+By default, email rate limiting uses the directly connected IP address.
+
+When:
+
+```text
+EMAIL_TRUST_RAILWAY_PROXY=true
+```
+
+the server may use a validated Railway `X-Real-IP` value for email rate limiting.
+
+Enable this only when the deployment topology guarantees that requests originate through the trusted Railway edge.
+
+Arbitrary `X-Forwarded-For` values are not trusted.
+
+## Testing
+
+Run:
 
 ```sh
 swift build
 swift test
 ```
 
-기본 테스트는 DB를 사용하지 않습니다. `swift test`는 PostgreSQL 통합 테스트도 실행합니다. 앱이 `.env`를 읽은 뒤 `TEST_DATABASE_NAME`이 정확히 `waktrainer_test_auth`인지 검증하며, 누락되거나 다른 이름이면 skip 대신 실패합니다. 개발 DB `waktrainer`는 사용하지 않습니다. 반드시 테스트 전용 DB를 사용하세요. 테스트는 테이블을 생성하고 정상 종료 시 마이그레이션을 되돌립니다.
+The PostgreSQL integration test suite requires a disposable database named exactly:
 
-선택 설정: `TEST_DATABASE_HOST` (127.0.0.1), `TEST_DATABASE_PORT` (5432), `TEST_DATABASE_USERNAME` (vapor), `TEST_DATABASE_PASSWORD`.
-
-```sh
-# .env에 TEST_DATABASE_NAME 및 TEST_DATABASE_* 접속 정보를 설정한 뒤 실행
-swift test
+```text
+waktrainer_test_auth
 ```
 
-통합 테스트는 회원가입·중복·로그인 실패, JWT 인증, 동시 refresh 단일 성공, 로그아웃 후 토큰 거부, 비밀번호 변경 후 모든 세션 폐기, 탈퇴 및 세션 삭제를 검증합니다.
+Set:
 
-비밀번호 재설정 통합 테스트는 mock 메일 서비스와 실제 PostgreSQL을 사용해 토큰 생성, 재설정 성공, 사용·만료 토큰 거부, 기존 비밀번호 거부, 새 비밀번호 로그인 및 기존 세션 폐기를 검증합니다.
+```text
+TEST_DATABASE_NAME=waktrainer_test_auth
+```
+
+and configure the corresponding test database connection values:
+
+- `TEST_DATABASE_HOST`
+- `TEST_DATABASE_PORT`
+- `TEST_DATABASE_USERNAME`
+- `TEST_DATABASE_PASSWORD`
+
+The local Docker Compose setup creates only the development `waktrainer` database, so the integration-test database must be provisioned separately.
+
+The integration suite uses:
+
+- Mock email delivery
+- Real PostgreSQL
+- Real migrations
+
+Missing or unsafe test database configuration causes the tests to fail rather than silently skip.
+
+Do not run multiple integration or E2E suites concurrently against the same disposable test database.
+
+Current coverage includes:
+
+- Signup
+- Login
+- Refresh rotation
+- Logout
+- Account withdrawal
+- Password changes
+- Password reset
+- Login rate limiting
+- Shared email rate limiting
+- Email verification
+- Token expiration
+- Single-use token behavior
+- Concurrent token consumption
+- Account-enumeration-safe responses
+- Migration behavior for existing users
+
+Mock delivery tests do not verify actual inbox delivery.
+
+## Production deployment
+
+WakTrainerServer is currently deployed on Railway.
+
+Current production architecture:
+
+- Application hosting: Railway
+- Database: Railway PostgreSQL
+- Public API traffic: Railway HTTPS domain
+- Secret management: Railway environment variables
+- Email provider: Resend
+- Database connection: Railway private network
+
+Production migrations run as a Railway pre-deploy command:
+
+```sh
+./WakTrainerServer migrate --env production --yes
+```
+
+The application currently connects to Railway PostgreSQL over the private network with PostgreSQL TLS disabled at the application layer.
+
+Production requires the relevant environment variables, including:
+
+```text
+JWT_SECRET
+DATABASE_HOST
+DATABASE_PORT
+DATABASE_USERNAME
+DATABASE_PASSWORD
+DATABASE_NAME
+RESEND_API_KEY
+PASSWORD_RESET_URL_BASE
+EMAIL_VERIFICATION_URL_BASE
+```
+
+`EMAIL_TRUST_RAILWAY_PROXY` should only be enabled after validating the trusted proxy configuration.
+
+Operational monitoring, production sender/domain configuration, backup strategy, and broader API-wide abuse protection should be reviewed as the service grows.
+
+## Documentation
+
+Additional documentation:
+
+- [Email verification](docs/email-verification.md)
+- [Shared email rate limiting](docs/email-rate-limits.md)
+- [AuthenticationKit Demo E2E guide](docs/authentication-e2e.md)
