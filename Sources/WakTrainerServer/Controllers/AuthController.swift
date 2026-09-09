@@ -21,6 +21,10 @@ struct AuthController: RouteCollection {
         let auth = routes.grouped("auth")
         auth.post("request-email-change", use: requestEmailChange)
         auth.post("confirm-email-change", use: confirmEmailChange)
+        auth.get("sessions", use: sessions)
+        auth.delete("sessions", ":sessionID", use: revokeSession)
+        auth.post("logout-other-sessions", use: logoutOtherSessions)
+        auth.post("logout-all", use: logoutAll)
         auth.post("login", use: login)
         auth.post("signup", use: signUp)
         auth.post("refresh", use: refresh)
@@ -155,7 +159,7 @@ struct AuthController: RouteCollection {
             guard let session = try await RefreshToken.query(on: db).filter(\.$tokenHash == hash).first(),
                   session.expiresAt > Date() else { throw Abort(.unauthorized) }
             try await session.delete(on: db)
-            return try await AuthSession.issue(for: user, request: req, on: db)
+            return try await AuthSession.issue(for: user, request: req, on: db, rotating: session)
         }
     }
 

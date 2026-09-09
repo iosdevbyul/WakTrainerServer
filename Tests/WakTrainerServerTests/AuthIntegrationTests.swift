@@ -59,13 +59,20 @@ struct AuthIntegrationTests {
             #expect(!legacyUser.isEmailVerified)
             // Upgrade an existing verified schema without touching users or sessions.
             let legacySessionID = UUID()
-            try await RefreshToken(id: legacySessionID, userID: legacyID,
-                tokenHash: AuthSession.hash(AuthSession.randomToken()),
-                expiresAt: Date().addingTimeInterval(3600)).create(on: app.db)
+            try await sql.raw("""
+                INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, created_at)
+                VALUES (\(bind: legacySessionID), \(bind: legacyID),
+                        \(bind: AuthSession.hash(AuthSession.randomToken())),
+                        CURRENT_TIMESTAMP + INTERVAL '1 hour', CURRENT_TIMESTAMP)
+                """).run()
             app.migrations.add(AddEmailChangeMigration())
             try await app.autoMigrate()
             try await app.autoMigrate() // pre-deploy retry is a no-op
             #expect(try await User.find(legacyID, on: app.db)?.email == legacyUser.email)
+            try await verifySessionMigration(app, legacyID: legacySessionID)
+            app.migrations.add(AddSessionMetadataMigration(), IndexSessionUserExpiryMigration())
+            try await app.autoMigrate()
+            try await app.autoMigrate()
             #expect(try await RefreshToken.find(legacySessionID, on: app.db) != nil)
             #expect(try await EmailChangeToken.query(on: app.db).count() == 0)
             try await legacyUser.delete(on: app.db)
@@ -147,6 +154,8 @@ struct AuthIntegrationTests {
             try await verifyPasswordReset(app, emailService: emailService)
             try await verifyEmailVerification(app, emailService: emailService)
             try await verifyEmailChange(app, emailService: emailService)
+            try await verifySessionManagement(app)
+            try await verifySessionRaces(app)
             try await verifyEmailRateLimits(app)
             try await verifyRateLimits(app)
             try await app.autoRevert()

@@ -10,6 +10,14 @@ final class RefreshToken: Model, @unchecked Sendable {
     @Field(key: "expires_at") var expiresAt: Date
     @Timestamp(key: "created_at", on: .create) var createdAt: Date?
 
+    // Management identity survives rotation; id remains the JWT sid for this row.
+    @OptionalField(key: "management_id") var managementID: UUID?
+    @OptionalField(key: "started_at") var startedAt: Date?
+    @OptionalField(key: "last_refreshed_at") var lastRefreshedAt: Date?
+    @OptionalField(key: "device_name") var deviceName: String?
+
+    func managementIdentifier() throws -> UUID { try managementID ?? requireID() }
+
     init() {}
 
     init(id: UUID, userID: UUID, tokenHash: String, expiresAt: Date) {
