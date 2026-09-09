@@ -19,6 +19,17 @@ struct EmailMessage: Sendable {
     let subject: String
     let html: String
 
+    static func signUpVerification(to email: String, verificationURL: String) -> Self {
+        let escapedURL = verificationURL.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+        return .init(recipient: email, subject: "WakTrainer 이메일 인증", html: """
+            <p>아래 링크에서 이메일 인증을 완료해주세요. 링크는 24시간 동안 유효합니다.</p>
+            <p><a href="\(escapedURL)">이메일 인증</a></p>
+            """)
+    }
+
     static func passwordReset(to email: String, resetURL: String) -> Self {
         .init(recipient: email, subject: "WakTrainer 비밀번호 재설정", html: """
             <p>비밀번호를 재설정하려면 아래 링크를 눌러주세요.</p>

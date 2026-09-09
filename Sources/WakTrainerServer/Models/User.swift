@@ -20,6 +20,9 @@ final class User: Model, Content, @unchecked Sendable {
     @Field(key: "password_hash")
     var passwordHash: String
 
+    @Field(key: "is_email_verified")
+    var isEmailVerified: Bool
+
     @Timestamp(key: "created_at", on: .create)
     var createdAt: Date?
 
@@ -36,5 +39,6 @@ final class User: Model, Content, @unchecked Sendable {
         self.id = id
         self.email = email
         self.passwordHash = passwordHash
+        self.isEmailVerified = false
     }
 }

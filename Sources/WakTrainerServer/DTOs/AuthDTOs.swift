@@ -29,6 +29,7 @@ struct ForgotPasswordRequestDTO: Content {
 struct UserResponseDTO: Content {
     let id: String
     let email: String
+    let isEmailVerified: Bool
 }
 
 struct SessionResponseDTO: Content {
@@ -45,4 +46,13 @@ struct MessageResponseDTO: Content {
 struct ChangePasswordRequestDTO: Content {
     let currentPassword: String
     let newPassword: String
+}
+
+
+struct VerifyEmailRequestDTO: Content {
+    let token: String
+}
+
+struct ResendVerificationEmailRequestDTO: Content {
+    let email: String
 }

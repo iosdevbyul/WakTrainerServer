@@ -41,9 +41,22 @@ struct AuthIntegrationTests {
             )
             try app.register(collection: AuthController(
                 emailService: EmailService(transport: emailService),
-                passwordResetURLBase: "https://example.com/reset-password"
+                passwordResetURLBase: "https://example.com/reset-password",
+                emailVerificationURLBase: "https://example.com/verify-email"
             ))
             try await app.autoMigrate()
+            // Simulate upgrading an existing installation before adding the new fields.
+            let sql = try #require(app.db as? any SQLDatabase)
+            let legacyID = UUID()
+            try await sql.raw("""
+                INSERT INTO users (id, email, password_hash)
+                VALUES (\(bind: legacyID), \(bind: UUID().uuidString + "@example.com"), 'migration-fixture')
+                """).run()
+            app.migrations.add(AddEmailVerificationMigration())
+            try await app.autoMigrate()
+            let legacyUser = try #require(try await User.find(legacyID, on: app.db))
+            #expect(!legacyUser.isEmailVerified)
+            try await legacyUser.delete(on: app.db)
         }) { app in
             // Valid forgot-password requests query the database, even for unknown users.
             let forgot = try await request(app, .POST, "forgot-password", body: [
@@ -120,6 +133,7 @@ struct AuthIntegrationTests {
             let deletedLogin = try await request(app, .POST, "login", body: ["email": email, "password": newPassword])
             #expect(deletedLogin.status == .unauthorized)
             try await verifyPasswordReset(app, emailService: emailService)
+            try await verifyEmailVerification(app, emailService: emailService)
             try await verifyEmailRateLimits(app)
             try await verifyRateLimits(app)
             try await app.autoRevert()
@@ -235,6 +249,7 @@ struct AuthIntegrationTests {
                     body: ["email": email, "password": "Example123!"])
                 try #require(signup.status == .ok)
             }
+            try await sql.raw("DELETE FROM email_rate_limits").run()
             var lastHash: String?
             for index in 0..<7 {
                 let response = try await app.sendRequest(.POST, "auth/forgot-password",

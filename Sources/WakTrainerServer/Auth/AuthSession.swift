@@ -68,7 +68,7 @@ enum AuthSession {
             expiresAt: now.addingTimeInterval(refreshLifetime)
         ).create(on: database)
         return SessionResponseDTO(
-            user: .init(id: userID.uuidString, email: user.email),
+            user: .init(id: userID.uuidString, email: user.email, isEmailVerified: user.isEmailVerified),
             accessToken: accessToken,
             refreshToken: rawToken
         )

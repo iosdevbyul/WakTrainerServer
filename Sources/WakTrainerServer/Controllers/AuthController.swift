@@ -6,10 +6,13 @@ struct AuthController: RouteCollection {
 
     private let emailService: EmailService
     private let passwordResetURLBase: String?
+    private let emailVerification: EmailVerificationService
 
-    init(emailService: EmailService = EmailService(), passwordResetURLBase: String? = nil) {
+    init(emailService: EmailService = EmailService(), passwordResetURLBase: String? = nil,
+         emailVerificationURLBase: String? = nil) {
         self.emailService = emailService
         self.passwordResetURLBase = passwordResetURLBase
+        self.emailVerification = .init(emailService: emailService, verificationURLBase: emailVerificationURLBase)
     }
 
     func boot(routes: any RoutesBuilder) throws {
@@ -23,6 +26,8 @@ struct AuthController: RouteCollection {
         auth.post("forgot-password", use: forgotPassword)
         auth.post("change-password", use: changePassword)
         auth.post("reset-password", use: resetPassword)
+        auth.post("verify-email", use: verifyEmail)
+        auth.post("resend-verification-email", use: resendVerificationEmail)
     }
 
     private func validate(email: String, password: String) throws {
@@ -66,8 +71,9 @@ struct AuthController: RouteCollection {
             throw Abort(.conflict, reason: "이미 사용 중인 이메일입니다.")
         }
         let passwordHash = try await req.password.async.hash(body.password)
+        let session: SessionResponseDTO
         do {
-            return try await req.db.transaction { db in
+            session = try await req.db.transaction { db in
                 let user = User(email: body.email, passwordHash: passwordHash)
                 try await user.create(on: db)
                 return try await AuthSession.issue(for: user, request: req, on: db)
@@ -76,6 +82,35 @@ struct AuthController: RouteCollection {
             // The UNIQUE constraint also protects concurrent signups.
             throw Abort(.conflict, reason: "이미 사용 중인 이메일입니다.")
         }
+        await sendVerificationEmail(to: body.email, on: req)
+        return session
+    }
+
+    private func sendVerificationEmail(to email: String, on req: Request) async {
+        do {
+            try await emailVerification.send(to: email, on: req)
+        } catch {
+            // Do not log addresses, URLs, raw tokens, or provider errors.
+            // Delivery failure must not turn a committed signup into an apparent failure.
+            req.logger.warning("Email verification delivery failed; a resend can be requested.")
+        }
+    }
+
+    @Sendable
+    func resendVerificationEmail(req: Request) async throws -> MessageResponseDTO {
+        let body = try req.content.decode(ResendVerificationEmailRequestDTO.self)
+        guard body.email.utf8.count <= 254, body.email.contains("@"), body.email.contains(".") else {
+            throw Abort(.badRequest, reason: "올바른 이메일 형식을 입력해주세요.")
+        }
+        await sendVerificationEmail(to: body.email, on: req)
+        return .init(message: "인증이 필요한 계정이면 이메일 인증 안내를 발송했습니다.")
+    }
+
+    @Sendable
+    func verifyEmail(req: Request) async throws -> MessageResponseDTO {
+        let body = try req.content.decode(VerifyEmailRequestDTO.self)
+        try await emailVerification.verify(token: body.token, on: req)
+        return .init(message: "이메일 인증이 완료되었습니다.")
     }
 
     @Sendable
@@ -103,7 +138,7 @@ struct AuthController: RouteCollection {
         guard let user = try await User.find(UUID(uuidString: payload.subject.value), on: req.db) else {
             throw Abort(.unauthorized)
         }
-        return .init(id: try user.requireID().uuidString, email: user.email)
+        return .init(id: try user.requireID().uuidString, email: user.email, isEmailVerified: user.isEmailVerified)
     }
 
     @Sendable
