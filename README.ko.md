@@ -11,6 +11,7 @@ WakTrainerServer는 Vapor, Swift 6.3, PostgreSQL 기반의 인증 백엔드 서�
 - JWT Access Token
 - Refresh Token Rotation
 - 현재 사용자 조회
+- 활성 세션 조회 및 개별/다른 기기/전체 로그아웃
 - 비밀번호 변경
 - 이메일 기반 비밀번호 재설정
 - 이메일 소유권 인증
@@ -22,7 +23,7 @@ WakTrainerServer는 Vapor, Swift 6.3, PostgreSQL 기반의 인증 백엔드 서�
 ## 요구사항
 
 - Swift 6.3
-- 로컬 SwiftPM 개발 기준 macOS 13 이상
+- 로컬 SwiftPM 개발 기준 macOS 13 이상 또는 제공된 Linux Docker 이미지
 - PostgreSQL
 - 실제 이메일 발송을 위한 Resend 인증 정보
 
@@ -59,7 +60,7 @@ openssl rand -base64 48
 | `RESEND_API_KEY` | 실제 이메일 발송 시 필수 |
 | `PASSWORD_RESET_URL_BASE` | 비밀번호 재설정 링크의 Base URL |
 | `EMAIL_CHANGE_URL_BASE` | 이메일 변경 확인 화면의 HTTPS Base URL |
-| `EMAIL_VERIFICATION_URL_BASE` | 이메일 인증 링크의 Base URL |
+| `EMAIL_VERIFICATION_URL_BASE` | 이메일 인증 링크의 HTTPS 프론트엔드 URL |
 | `EMAIL_TRUST_RAILWAY_PROXY` | `true`일 때 신뢰된 Railway `X-Real-IP` 처리 활성화 |
 
 프론트엔드 URL 예시:
@@ -71,6 +72,10 @@ https://your-frontend.example/change-email
 ```
 
 현재 비밀번호 재설정 URL은 서버가 토큰을 Base URL 뒤에 추가하므로, 기존 query string이나 fragment가 없는 URL을 사용하는 것이 좋습니다.
+
+이메일 인증 및 이메일 변경 URL은 호스트가 있는 HTTPS URL이어야 하며 URL에 사용자명이나 비밀번호를 포함할 수 없습니다.
+기존 query parameter는 유지하고 `token` parameter는 새 값으로 교체합니다.
+해당 URL의 프론트엔드 또는 앱에서 확인 흐름을 구현해야 합니다. 서버는 POST API와 이메일 템플릿을 제공합니다.
 
 ## 로컬 실행
 
@@ -124,10 +129,21 @@ Dockerfile과 Docker Compose 시작 설정은 database migration을 자동으로
 5. `CreateEmailRateLimitMigration`
 6. `AddEmailVerificationMigration`
 7. `AddEmailChangeMigration`
+8. `AddSessionMetadataMigration`
+9. `IndexSessionUserExpiryMigration`
 
 `AddEmailVerificationMigration`은 사용자 이메일 인증 상태와 이메일 인증 토큰 테이블을 추가합니다.
 
 기존 사용자는 초기 상태가 미인증으로 설정되지만 기존과 동일하게 로그인할 수 있습니다.
+
+`AddEmailChangeMigration`은 변경 대기 토큰을 위한 별도 테이블을 추가합니다.
+`AddSessionMetadataMigration`은 기존 세션 값을 변경하지 않고 nullable metadata 컬럼을 추가하며,
+컬럼 변경 시 잠금 대기 시간을 5초로 제한합니다. `IndexSessionUserExpiryMigration`은 사용자별 만료 조회용
+인덱스를 동시에 생성하며 트랜잭션 밖에서 실행해야 합니다. 현재 Fluent migrator는 이 방식을 지원합니다.
+
+기존 pre-deploy 명령으로 migration을 적용하세요. 구버전 코드는 refresh 시 관리용 ID를 계승하지 않으므로,
+세션 관리 기능을 사용하기 전에 모든 서버 인스턴스를 업데이트해야 합니다.
+재시도와 rollback에 관한 내용은 [세션 관리 배포 문서](docs/session-management.md#railway-migration)를 참고하세요.
 
 테스트는 별도의 PostgreSQL 데이터베이스를 사용하며 개발 DB에는 migration을 적용하지 않습니다.
 
@@ -154,6 +170,10 @@ Authorization: Bearer <accessToken>
 | POST | `/auth/refresh` | Refresh Token 및 세션 교체 |
 | GET | `/auth/me` | 현재 인증된 사용자 조회 |
 | POST | `/auth/logout` | 현재 세션 폐기 |
+| GET | `/auth/sessions` | 본인의 활성 세션 목록 |
+| DELETE | `/auth/sessions/:sessionID` | 관리용 ID로 본인의 특정 세션 폐기 |
+| POST | `/auth/logout-other-sessions` | 현재 세션 외 모두 폐기 |
+| POST | `/auth/logout-all` | 현재 세션 포함 모두 폐기 |
 | POST | `/auth/change-password` | 비밀번호 변경 및 세션 폐기 |
 | DELETE | `/auth/withdraw` | 회원탈퇴 |
 | POST | `/auth/forgot-password` | 비밀번호 재설정 메일 요청 |
@@ -167,6 +187,11 @@ Authorization: Bearer <accessToken>
 완료 요청 세션만 유지하며 새 이메일은 인증 완료 전까지 계정에 적용하지 않습니다.
 `AddEmailChangeMigration`은 기존 데이터 변경 없이 별도 토큰 테이블을 추가합니다.
 요청/응답, 배포와 토큰 정책은 [이메일 변경 문서](docs/email-change.md)를 참고하세요.
+
+세션 관리 API는 Bearer 인증을 요구합니다. 선택적인 `X-Device-Name`은 signup/login의 표시용 metadata이며 인증 수단이 아닙니다.
+관리용 ID는 refresh 후에도 유지되지만 JWT sid는 기존처럼 교체됩니다.
+`createdAt`은 현재 행 생성 시각, `startedAt`은 로그인 시작 시각, `lastRefreshedAt`은 마지막 refresh 성공 시각입니다.
+기존 클라이언트의 세션 응답은 변경하지 않습니다. API·정리·배포 세부 사항은 [세션 관리](docs/session-management.md)를 참고하세요.
 
 ### Session 응답
 
@@ -211,7 +236,8 @@ Signup, Login, Refresh는 동일한 session 구조를 반환합니다.
 
 이미 존재하는 이메일로 회원가입하면 HTTP `409`를 반환합니다.
 
-Rate limit에서 사용하는 이메일 정규화는 계정 저장 정책과 별개입니다.
+회원가입·로그인·이메일 변경은 전달받은 이메일 문자열을 그대로 비교하거나 저장하며, 앞뒤 공백 제거 또는 소문자 변환을 하지 않습니다.
+Rate limit은 요청 제한 카운터를 묶기 위해 이메일의 앞뒤 공백을 제거하고 소문자로 변환합니다.
 
 ## 세션
 
@@ -236,9 +262,54 @@ Refresh 성공 후 클라이언트는 access token과 refresh token을 모두 �
 
 Logout은 현재 세션만 폐기합니다.
 
-비밀번호 변경 및 비밀번호 재설정은 모든 활성 세션을 폐기합니다.
+비밀번호 변경 및 비밀번호 재설정은 모든 세션을 폐기하고 대기 중인 이메일 변경을 취소합니다.
+이메일 변경 완료 시에는 완료 요청 세션만 유지하고 새 주소를 인증된 상태로 설정합니다.
+`logout-other-sessions`는 호출한 현재 세션만 유지하고, `logout-all`은 현재 세션도 폐기합니다.
 
 유효한 session identifier가 없는 JWT는 허용하지 않습니다.
+
+### 세션 관리
+
+`GET /auth/sessions`는 인증된 사용자의 만료되지 않은 세션만 반환합니다.
+
+```json
+{
+  "sessions": [
+    {
+      "id": "<stable management UUID>",
+      "createdAt": "2026-09-09T09:00:00Z",
+      "startedAt": "2026-09-09T08:00:00Z",
+      "expiresAt": "2026-10-09T09:00:00Z",
+      "lastRefreshedAt": "2026-09-09T09:00:00Z",
+      "isCurrent": true,
+      "deviceName": "My iPhone"
+    }
+  ]
+}
+```
+
+`createdAt`은 현재 refresh 행의 생성 시각이고, `startedAt`은 rotation 후에도 유지됩니다.
+`lastRefreshedAt`은 각 API 요청 시각이 아니라 마지막 refresh 성공 시각만 기록합니다.
+날짜는 초 단위 ISO-8601 형식입니다. 값이 없는 optional 필드는 생략합니다.
+기존 세션은 남아 있는 가장 오래된 행의 생성 시각을 초기 `startedAt`으로 사용하므로 실제 최초 로그인 시각과 다를 수 있습니다.
+
+`DELETE /auth/sessions/:sessionID`에는 JWT `sid`가 아닌 목록에서 반환한 관리용 `id`를 사용합니다.
+현재 세션도 삭제할 수 있습니다. 다른 사용자 소유 ID와 존재하지 않는 ID는 동일한 `404`를 반환하고,
+UUID 형식이 잘못되면 `400`을 반환합니다. 삭제 성공 시 `message` 응답을 반환합니다.
+삭제된 세션의 access token과 refresh token은 이후 검증에 실패합니다.
+
+signup/login의 `X-Device-Name`은 선택 사항이며, 단일 헤더·UTF-8 기준 최대 128바이트·제어문자 없음 조건을 적용합니다.
+앞뒤 공백은 제거하고, 잘못되거나 누락된 이름은 무시합니다. Refresh는 저장된 이름을 유지합니다.
+세션 metadata에 clientId, IP, User-Agent는 저장하지 않으며 목록에 토큰 원문이나 해시를 반환하지 않습니다.
+
+Refresh와 세션 폐기는 동일한 사용자별 DB 잠금을 사용합니다. 관리용 ID는 교체된 후속 세션에도 유지되므로,
+대상 세션이 먼저 refresh되었다는 이유로 폐기 대상에서 빠지지 않습니다.
+호출한 세션 자체가 먼저 refresh되면 기존 Bearer token이 무효화되어 관리 요청에 `401`이 반환될 수 있습니다.
+이 경우 새로 발급된 Bearer token으로 다시 요청하세요.
+
+세션 발급과 목록 조회 시 해당 사용자의 만료 행을 최대 100개씩 정리합니다.
+정리할 행이 남아 있더라도 활성 목록에서는 모든 만료 행을 제외합니다.
+활동이 없는 계정의 만료 행은 남을 수 있으며, 별도 백그라운드 정리 scheduler는 없습니다.
 
 ### 이메일 인증 상태
 
@@ -273,7 +344,8 @@ GET /auth/me
 
 - 비밀번호 변경
 - 남아 있는 재설정 토큰 삭제
-- 모든 활성 세션 폐기
+- 대기 중인 이메일 변경 취소
+- 모든 세션 폐기
 
 존재하지 않는 계정과 rate limit에 의해 제한된 forgot-password 요청은 account enumeration 위험을 줄이기 위해 동일한 성공 응답을 반환합니다.
 
@@ -320,15 +392,56 @@ POST /auth/resend-verification-email
 
 이는 account enumeration 위험을 줄이기 위한 정책입니다.
 
-이메일 인증 링크는 토큰을 추출한 뒤 인증 endpoint로 전달할 수 있는 프론트엔드 또는 앱 진입점으로 연결되어야 합니다.
-
-예:
+`EMAIL_VERIFICATION_URL_BASE`는 다음과 같은 HTTPS 프론트엔드 URL로 설정합니다.
 
 ```text
-waktrainer://verify-email?token=...
+https://your-frontend.example/verify-email
 ```
 
-운영 HTTPS 프론트엔드가 앱으로 넘기거나 Universal Links를 사용할 수도 있습니다.
+서버가 token query parameter를 추가합니다. 프론트엔드는 앱으로 연결하거나 Universal Links를 사용한 뒤
+POST로 토큰을 제출할 수 있습니다. `waktrainer://` 같은 커스텀 URL scheme은 Base URL 설정값으로 허용되지 않습니다.
+GET 링크를 여는 것만으로 이메일 인증이 완료되지는 않습니다.
+
+인증 메일 발송이 실패해도 회원가입은 성공 상태를 유지합니다. 재전송 역시 발송 실패 시 일반적인 성공 메시지를 반환합니다.
+사용자는 인증 메일을 다시 요청할 수 있습니다.
+
+## 이메일 변경
+
+Bearer 인증으로 이메일 변경을 요청합니다.
+
+```http
+POST /auth/request-email-change
+```
+
+```json
+{"currentPassword":"<current password>","newEmail":"new@example.com"}
+```
+
+변경 대기 중에는 계정 이메일과 인증 상태를 유지합니다. 현재 비밀번호가 일치해야 합니다.
+현재와 같은 이메일이면 `400`, 이미 사용 중인 주소이면 `409`, 요청 제한에 걸리면 `429`를 반환합니다.
+공통 이메일 gateway는 토큰을 준비하기 전에 `emailChangeVerification` action의 제한 횟수를 소비합니다.
+
+동일 사용자의 유효한 Bearer 세션으로 변경을 완료합니다. 변경 요청을 시작한 세션과 같을 필요는 없습니다.
+
+```http
+POST /auth/confirm-email-change
+```
+
+```json
+{"token":"<token from the email link>"}
+```
+
+변경 토큰은 난수 32바이트로 생성하고 SHA-256 해시로 저장하며, 유효 시간은 30분이고 일회성입니다.
+새 토큰을 발급하면 이전 토큰은 무효화됩니다. 발송 실패 시 해당 요청이 만든 토큰만 삭제합니다.
+이전 토큰은 복구하지 않으며 사용자가 메일을 다시 요청할 수 있습니다.
+
+완료 시 이메일 중복을 다시 검사하고 주소를 변경한 뒤 `isEmailVerified = true`로 설정하며,
+완료 요청 세션만 유지합니다. 변경 토큰과 남아 있는 이메일 인증·비밀번호 재설정 토큰도 삭제합니다.
+`/auth/me`와 이후 refresh 응답에 새 이메일이 반영됩니다.
+잘못된 토큰, 만료·재사용된 토큰, 다른 사용자 토큰은 `400`을 반환하고, 완료 전에 주소가 이미 사용 중이 되면 `409`를 반환합니다.
+요청과 완료 성공 응답은 기존 `message` 형식을 사용합니다.
+
+실패 복구와 동시성에 관한 내용은 [이메일 변경 문서](docs/email-change.md)를 참고하세요.
 
 ## Rate Limiting
 
@@ -357,7 +470,7 @@ waktrainer://verify-email?token=...
 - 이메일 action
 - 전체 발송량
 
-Limiter 저장용 식별자는 SHA-256 hash로 저장됩니다.
+Limiter에 저장하는 수신자·클라이언트·IP·action 식별자는 SHA-256 해시를 사용하며, 전체 제한 버킷은 고정 키를 사용합니다.
 
 `X-Client-ID`는 선택 사항이며 인증 수단이 아니라 abuse 방지용 signal로만 사용됩니다.
 
@@ -393,7 +506,7 @@ EMAIL_TRUST_RAILWAY_PROXY=true
 
 ```sh
 swift build
-swift test
+swift test --disable-sandbox
 ```
 
 PostgreSQL 통합 테스트에는 정확히 다음 이름의 폐기 가능한 테스트 DB가 필요합니다.
@@ -438,12 +551,14 @@ TEST_DATABASE_NAME=waktrainer_test_auth
 - 비밀번호 재설정
 - 로그인 rate limiting
 - 공통 이메일 rate limiting
-- 이메일 인증
+- 이메일 인증 및 새 주소 인증 후 이메일 변경
+- 세션 소유권·현재 세션 식별·metadata·폐기
+- Refresh와 폐기의 경합 및 사용자별 만료 세션 정리
 - 토큰 만료
 - 일회성 토큰 동작
 - 동시 토큰 소비
 - account enumeration 방지 응답
-- 기존 사용자를 포함한 migration 동작
+- Migration upgrade/revert 및 기존 사용자·세션 보존
 
 Mock 이메일 테스트는 실제 수신함 도착 여부를 검증하지 않습니다.
 
@@ -480,6 +595,7 @@ DATABASE_NAME
 RESEND_API_KEY
 PASSWORD_RESET_URL_BASE
 EMAIL_VERIFICATION_URL_BASE
+EMAIL_CHANGE_URL_BASE
 ```
 
 `EMAIL_TRUST_RAILWAY_PROXY`는 trusted proxy 구성을 확인한 뒤에만 활성화해야 합니다.
@@ -490,6 +606,8 @@ EMAIL_VERIFICATION_URL_BASE
 
 추가 문서:
 
+- [세션 관리](docs/session-management.md)
+- [이메일 변경](docs/email-change.md)
 - [이메일 인증](docs/email-verification.md)
 - [공통 이메일 발송 제한](docs/email-rate-limits.md)
 - [AuthenticationKit Demo E2E 가이드](docs/authentication-e2e.md)
