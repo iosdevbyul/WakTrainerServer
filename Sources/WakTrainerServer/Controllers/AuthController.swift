@@ -3,15 +3,15 @@ import Fluent
 import JWT
 
 struct AuthController: RouteCollection {
-    
-    private let emailService: any EmailSending
+
+    private let emailService: EmailService
     private let passwordResetURLBase: String?
 
-    init(emailService: any EmailSending = EmailService(), passwordResetURLBase: String? = nil) {
+    init(emailService: EmailService = EmailService(), passwordResetURLBase: String? = nil) {
         self.emailService = emailService
         self.passwordResetURLBase = passwordResetURLBase
     }
-    
+
     func boot(routes: any RoutesBuilder) throws {
         let auth = routes.grouped("auth")
         auth.post("login", use: login)
@@ -170,55 +170,55 @@ struct AuthController: RouteCollection {
 
         let responseMessage = "비밀번호 재설정 안내 메일을 발송했습니다."
 
-        guard let user = try await User.query(on: req.db)
-            .filter(\.$email == body.email)
-            .first()
-        else {
-            return .init(message: responseMessage)
-        }
-
-        let userID = try user.requireID()
-
-        let rawToken = AuthSession.randomToken()
-        let tokenHash = AuthSession.hash(rawToken)
-        let expiresAt = Date().addingTimeInterval(30 * 60)
-
-        guard let resetURLBase = passwordResetURLBase ?? Environment.get("PASSWORD_RESET_URL_BASE"),
-              !resetURLBase.isEmpty else {
-            throw Abort(
-                .internalServerError,
-                reason: "PASSWORD_RESET_URL_BASE environment variable is required."
-            )
-        }
-
-        let resetURL = "\(resetURLBase)?token=\(rawToken)"
-
-        try await PasswordResetToken.query(on: req.db)
-            .filter(\.$user.$id == userID)
-            .delete()
-
-        let resetToken = PasswordResetToken(
-            userID: userID,
-            tokenHash: tokenHash,
-            expiresAt: expiresAt
-        )
-
-        try await resetToken.create(on: req.db)
-
+        var resetToken: PasswordResetToken?
         do {
-            try await emailService.sendPasswordResetEmail(
-                to: user.email,
-                resetURL: resetURL,
-                on: req
-            )
+            _ = try await emailService.withRequest(to: body.email, action: .passwordReset, on: req) {
+                guard let user = try await User.query(on: req.db)
+                    .filter(\.$email == body.email)
+                    .first()
+                else {
+                    return nil
+                }
+
+                let userID = try user.requireID()
+
+                let rawToken = AuthSession.randomToken()
+                let tokenHash = AuthSession.hash(rawToken)
+                let expiresAt = Date().addingTimeInterval(30 * 60)
+
+                guard let resetURLBase = passwordResetURLBase ?? Environment.get("PASSWORD_RESET_URL_BASE"),
+                      !resetURLBase.isEmpty else {
+                    throw Abort(
+                        .internalServerError,
+                        reason: "PASSWORD_RESET_URL_BASE environment variable is required."
+                    )
+                }
+
+                let resetURL = "\(resetURLBase)?token=\(rawToken)"
+
+                try await PasswordResetToken.query(on: req.db)
+                    .filter(\.$user.$id == userID)
+                    .delete()
+
+                let token = PasswordResetToken(
+                    userID: userID,
+                    tokenHash: tokenHash,
+                    expiresAt: expiresAt
+                )
+
+                try await token.create(on: req.db)
+                resetToken = token
+
+                return .passwordReset(to: body.email, resetURL: resetURL)
+            }
         } catch {
-            try? await resetToken.delete(on: req.db)
+            if let resetToken { try? await resetToken.delete(on: req.db) }
             throw error
         }
 
         return .init(message: responseMessage)
     }
-    
+
     @Sendable
     func resetPassword(req: Request) async throws -> MessageResponseDTO {
         let body = try req.content.decode(ResetPasswordRequestDTO.self)
