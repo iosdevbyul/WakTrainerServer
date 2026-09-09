@@ -14,6 +14,7 @@ WakTrainerServer는 Vapor, Swift 6.3, PostgreSQL 기반의 인증 백엔드 서�
 - 비밀번호 변경
 - 이메일 기반 비밀번호 재설정
 - 이메일 소유권 인증
+- 새 주소 인증 후 이메일 변경
 - 회원탈퇴
 - 로그인 요청 제한
 - 사용자 트리거 이메일 발송 공통 제한
@@ -57,6 +58,7 @@ openssl rand -base64 48
 | `DATABASE_NAME` | 기본값 `waktrainer` |
 | `RESEND_API_KEY` | 실제 이메일 발송 시 필수 |
 | `PASSWORD_RESET_URL_BASE` | 비밀번호 재설정 링크의 Base URL |
+| `EMAIL_CHANGE_URL_BASE` | 이메일 변경 확인 화면의 HTTPS Base URL |
 | `EMAIL_VERIFICATION_URL_BASE` | 이메일 인증 링크의 Base URL |
 | `EMAIL_TRUST_RAILWAY_PROXY` | `true`일 때 신뢰된 Railway `X-Real-IP` 처리 활성화 |
 
@@ -65,6 +67,7 @@ openssl rand -base64 48
 ```text
 https://your-frontend.example/reset-password
 https://your-frontend.example/verify-email
+https://your-frontend.example/change-email
 ```
 
 현재 비밀번호 재설정 URL은 서버가 토큰을 Base URL 뒤에 추가하므로, 기존 query string이나 fragment가 없는 URL을 사용하는 것이 좋습니다.
@@ -104,6 +107,7 @@ Dockerfile과 Docker Compose 시작 설정은 database migration을 자동으로
 - 비밀번호 재설정
 - 이메일 인증
 - 이메일 인증 재전송
+- 이메일 변경 인증
 
 개발 환경에서는 현재 Resend onboarding sender를 사용합니다. 운영 발신자 정보를 사용하려면 검증된 sender와 domain을 설정해야 합니다.
 
@@ -119,6 +123,7 @@ Dockerfile과 Docker Compose 시작 설정은 database migration을 자동으로
 4. `CreatePasswordResetTokenMigration`
 5. `CreateEmailRateLimitMigration`
 6. `AddEmailVerificationMigration`
+7. `AddEmailChangeMigration`
 
 `AddEmailVerificationMigration`은 사용자 이메일 인증 상태와 이메일 인증 토큰 테이블을 추가합니다.
 
@@ -155,6 +160,13 @@ Authorization: Bearer <accessToken>
 | POST | `/auth/reset-password` | 재설정 토큰을 이용한 비밀번호 변경 |
 | POST | `/auth/verify-email` | 이메일 인증 토큰을 이용한 소유권 인증 |
 | POST | `/auth/resend-verification-email` | 이메일 인증 메일 재전송 |
+| POST | `/auth/request-email-change` | 새 이메일로 변경 인증 요청 (Bearer + 현재 비밀번호) |
+| POST | `/auth/confirm-email-change` | 이메일 변경 완료 (동일 사용자 Bearer + token) |
+
+이메일 변경은 현재 비밀번호와 Bearer 인증으로 요청하고, 동일 사용자 Bearer와 메일 토큰으로 완료합니다.
+완료 요청 세션만 유지하며 새 이메일은 인증 완료 전까지 계정에 적용하지 않습니다.
+`AddEmailChangeMigration`은 기존 데이터 변경 없이 별도 토큰 테이블을 추가합니다.
+요청/응답, 배포와 토큰 정책은 [이메일 변경 문서](docs/email-change.md)를 참고하세요.
 
 ### Session 응답
 
@@ -357,8 +369,7 @@ Limiter 저장용 식별자는 SHA-256 hash로 저장됩니다.
 
 - `passwordReset`
 - `signUpVerification`
-
-`emailChangeVerification`은 추후 이메일 변경 기능을 위한 확장 지점이며 아직 이메일 변경 API는 구현되지 않았습니다.
+- `emailChangeVerification`
 
 ### Railway Proxy 처리
 

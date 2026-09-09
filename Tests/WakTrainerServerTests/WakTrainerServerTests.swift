@@ -10,7 +10,7 @@ struct WakTrainerServerTests {
             let hello = try await app.sendRequest(.GET, "hello")
             #expect(hello.status == .ok)
             #expect(hello.body.string == "Hello, world!")
-            for (method, path) in [(HTTPMethod.GET, "me"), (.POST, "logout"), (.DELETE, "withdraw"), (.POST, "change-password")] {
+            for (method, path) in [(HTTPMethod.GET, "me"), (.POST, "logout"), (.DELETE, "withdraw"), (.POST, "change-password"), (.POST, "request-email-change"), (.POST, "confirm-email-change")] {
                 let response = try await app.sendRequest(method, "auth/" + path)
                 #expect(response.status == .unauthorized)
             }

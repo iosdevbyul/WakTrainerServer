@@ -47,5 +47,6 @@ func configure(_ app: Application) async throws {
     app.migrations.add(CreatePasswordResetTokenMigration())
     app.migrations.add(CreateEmailRateLimitMigration())
     app.migrations.add(AddEmailVerificationMigration())
+    app.migrations.add(AddEmailChangeMigration())
     try routes(app)
 }

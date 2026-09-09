@@ -6,10 +6,12 @@ struct AuthController: RouteCollection {
 
     private let emailService: EmailService
     private let passwordResetURLBase: String?
+    private let emailChange: EmailChangeService
     private let emailVerification: EmailVerificationService
 
     init(emailService: EmailService = EmailService(), passwordResetURLBase: String? = nil,
-         emailVerificationURLBase: String? = nil) {
+         emailVerificationURLBase: String? = nil, emailChangeURLBase: String? = nil) {
+        self.emailChange = .init(emailService: emailService, verificationURLBase: emailChangeURLBase)
         self.emailService = emailService
         self.passwordResetURLBase = passwordResetURLBase
         self.emailVerification = .init(emailService: emailService, verificationURLBase: emailVerificationURLBase)
@@ -17,6 +19,8 @@ struct AuthController: RouteCollection {
 
     func boot(routes: any RoutesBuilder) throws {
         let auth = routes.grouped("auth")
+        auth.post("request-email-change", use: requestEmailChange)
+        auth.post("confirm-email-change", use: confirmEmailChange)
         auth.post("login", use: login)
         auth.post("signup", use: signUp)
         auth.post("refresh", use: refresh)
@@ -56,7 +60,8 @@ struct AuthController: RouteCollection {
         let userID = try existing.requireID()
         return try await req.db.transaction { db in
             let user = try await AuthSession.lockUser(userID, on: db)
-            guard try await req.password.async.verify(body.password, created: user.passwordHash) else {
+            guard user.email == body.email,
+                  try await req.password.async.verify(body.password, created: user.passwordHash) else {
                 throw Abort(.unauthorized, reason: "이메일 또는 비밀번호가 올바르지 않습니다.")
             }
             return try await AuthSession.issue(for: user, request: req, on: db)
@@ -111,6 +116,29 @@ struct AuthController: RouteCollection {
         let body = try req.content.decode(VerifyEmailRequestDTO.self)
         try await emailVerification.verify(token: body.token, on: req)
         return .init(message: "이메일 인증이 완료되었습니다.")
+    }
+
+    @Sendable
+    func requestEmailChange(req: Request) async throws -> MessageResponseDTO {
+        let payload = try await AuthSession.payload(from: req)
+        _ = try await AuthSession.validate(payload, on: req.db)
+        let body = try req.content.decode(RequestEmailChangeRequestDTO.self)
+        // Preserve signup/login's exact email comparison and storage policy.
+        guard body.newEmail.utf8.count <= 254, body.newEmail.contains("@"), body.newEmail.contains("."),
+              !body.currentPassword.isEmpty, body.currentPassword.utf8.count <= 72 else {
+            throw Abort(.badRequest, reason: "올바른 이메일과 현재 비밀번호를 입력해주세요.")
+        }
+        try await emailChange.request(newEmail: body.newEmail, currentPassword: body.currentPassword,
+                                      payload: payload, on: req)
+        return .init(message: "새 이메일로 이메일 변경 인증 안내를 발송했습니다.")
+    }
+
+    @Sendable
+    func confirmEmailChange(req: Request) async throws -> MessageResponseDTO {
+        let payload = try await AuthSession.payload(from: req)
+        let body = try req.content.decode(ConfirmEmailChangeRequestDTO.self)
+        try await emailChange.confirm(token: body.token, payload: payload, on: req)
+        return .init(message: "이메일이 변경되었습니다. 다른 세션은 로그아웃되었습니다.")
     }
 
     @Sendable
@@ -183,6 +211,7 @@ struct AuthController: RouteCollection {
             guard try await req.password.async.verify(body.currentPassword, created: user.passwordHash) else {
                 throw Abort(.unauthorized, reason: "현재 비밀번호가 올바르지 않습니다.")
             }
+            try await EmailChangeToken.query(on: db).filter(\.$user.$id == userID).delete()
             user.passwordHash = passwordHash
             try await user.update(on: db)
             try await RefreshToken.query(on: db).filter(\.$user.$id == userID).delete()
@@ -231,17 +260,16 @@ struct AuthController: RouteCollection {
 
                 let resetURL = "\(resetURLBase)?token=\(rawToken)"
 
-                try await PasswordResetToken.query(on: req.db)
-                    .filter(\.$user.$id == userID)
-                    .delete()
-
-                let token = PasswordResetToken(
-                    userID: userID,
-                    tokenHash: tokenHash,
-                    expiresAt: expiresAt
-                )
-
-                try await token.create(on: req.db)
+                let token: PasswordResetToken? = try await req.db.transaction { db in
+                    let lockedUser = try await AuthSession.lockUser(userID, on: db)
+                    guard lockedUser.email == body.email else { return nil }
+                    try await PasswordResetToken.query(on: db)
+                        .filter(\.$user.$id == userID).delete()
+                    let token = PasswordResetToken(userID: userID, tokenHash: tokenHash, expiresAt: expiresAt)
+                    try await token.create(on: db)
+                    return token
+                }
+                guard let token else { return nil }
                 resetToken = token
 
                 return .passwordReset(to: body.email, resetURL: resetURL)
@@ -294,7 +322,13 @@ struct AuthController: RouteCollection {
 
         try await req.db.transaction { db in
             let user = try await AuthSession.lockUser(userID, on: db)
+            guard let currentToken = try await PasswordResetToken.query(on: db)
+                .filter(\.$user.$id == userID).filter(\.$tokenHash == tokenHash).first(),
+                  let expiry = currentToken.expiresAt, expiry > Date() else {
+                throw Abort(.badRequest, reason: "유효하지 않거나 만료된 비밀번호 재설정 토큰입니다.")
+            }
 
+            try await EmailChangeToken.query(on: db).filter(\.$user.$id == userID).delete()
             user.passwordHash = passwordHash
             try await user.update(on: db)
 

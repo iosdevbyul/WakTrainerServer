@@ -14,6 +14,7 @@ It currently supports:
 - Password changes
 - Password reset by email
 - Email ownership verification
+- Email changes after verifying the new address
 - Account deletion
 - Login rate limiting
 - Shared rate limiting for user-triggered email delivery
@@ -57,6 +58,7 @@ openssl rand -base64 48
 | `DATABASE_NAME` | Defaults to `waktrainer` |
 | `RESEND_API_KEY` | Required for actual email delivery |
 | `PASSWORD_RESET_URL_BASE` | Base URL used for password-reset links |
+| `EMAIL_CHANGE_URL_BASE` | HTTPS frontend URL for email-change confirmation |
 | `EMAIL_VERIFICATION_URL_BASE` | Base URL used for email-verification links |
 | `EMAIL_TRUST_RAILWAY_PROXY` | Enables trusted Railway `X-Real-IP` handling when set to `true` |
 
@@ -65,6 +67,7 @@ Example frontend destinations:
 ```text
 https://your-frontend.example/reset-password
 https://your-frontend.example/verify-email
+https://your-frontend.example/change-email
 ```
 
 The password-reset URL should currently be configured without an existing query string or fragment because the server appends the reset token to the configured base URL.
@@ -104,6 +107,7 @@ Currently supported email flows include:
 - Password reset
 - Email verification
 - Email verification resend
+- Email-change verification
 
 The development sender currently uses Resend's onboarding sender. Configure a verified sender and domain before using a production mail identity.
 
@@ -119,6 +123,7 @@ The current migration registration order is:
 4. `CreatePasswordResetTokenMigration`
 5. `CreateEmailRateLimitMigration`
 6. `AddEmailVerificationMigration`
+7. `AddEmailChangeMigration`
 
 `AddEmailVerificationMigration` adds the user's email-verification state and the email-verification token table.
 
@@ -155,6 +160,14 @@ Authorization: Bearer <accessToken>
 | POST | `/auth/reset-password` | Reset the password using a reset token |
 | POST | `/auth/verify-email` | Verify email ownership using a verification token |
 | POST | `/auth/resend-verification-email` | Request another verification email |
+| POST | `/auth/request-email-change` | Request verification of a new email (Bearer + current password) |
+| POST | `/auth/confirm-email-change` | Confirm the change (same-user Bearer + token) |
+
+Email changes require the current password and Bearer authentication to request, then a mail token
+and a valid Bearer session of the same user to confirm. Only the confirming session is retained.
+The account email stays unchanged until confirmation. `AddEmailChangeMigration` adds a separate
+token table without modifying existing data. See [email changes](docs/email-change.md) for API,
+deployment, and token policies.
 
 ### Session response
 
@@ -359,8 +372,7 @@ The server currently supports rate-limit actions including:
 
 - `passwordReset`
 - `signUpVerification`
-
-`emailChangeVerification` is reserved as an extension point for future email-change support.
+- `emailChangeVerification`
 
 ### Railway proxy handling
 

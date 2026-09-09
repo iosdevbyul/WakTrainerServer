@@ -18,19 +18,11 @@ struct EmailVerificationService: Sendable {
                 let userID = try existing.requireID()
                 let prepared: (UUID, EmailMessage)? = try await req.db.transaction { db in
                     let user = try await AuthSession.lockUser(userID, on: db)
-                    guard !user.isEmailVerified else { return nil }
+                    guard user.email == email, !user.isEmailVerified else { return nil }
                     let rawToken = AuthSession.randomToken()
-                    guard let base = verificationURLBase ?? Environment.get("EMAIL_VERIFICATION_URL_BASE"),
-                          var components = URLComponents(string: base),
-                          components.scheme == "https", components.host != nil,
-                          components.user == nil, components.password == nil else {
-                        throw Abort(.internalServerError, reason: "A valid HTTPS EMAIL_VERIFICATION_URL_BASE is required.")
-                    }
-                    var items = components.queryItems ?? []
-                    items.removeAll { $0.name == "token" }
-                    items.append(.init(name: "token", value: rawToken))
-                    components.queryItems = items
-                    guard let url = components.url?.absoluteString else { throw Abort(.internalServerError) }
+                    let url = try Self.verificationURL(
+                        base: verificationURLBase ?? Environment.get("EMAIL_VERIFICATION_URL_BASE"),
+                        token: rawToken, setting: "EMAIL_VERIFICATION_URL_BASE")
                     try await EmailVerificationToken.query(on: db).filter(\.$user.$id == userID).delete()
                     let token = EmailVerificationToken(
                         userID: userID, tokenHash: AuthSession.hash(rawToken),
@@ -49,6 +41,21 @@ struct EmailVerificationService: Sendable {
             }
             throw error
         }
+    }
+
+    /// Shared HTTPS link construction for email ownership proofs.
+    static func verificationURL(base: String?, token: String, setting: String) throws -> String {
+        guard let base, var components = URLComponents(string: base),
+              components.scheme == "https", components.host != nil,
+              components.user == nil, components.password == nil else {
+            throw Abort(.internalServerError, reason: "A valid HTTPS \(setting) is required.")
+        }
+        var items = components.queryItems ?? []
+        items.removeAll { $0.name == "token" }
+        items.append(.init(name: "token", value: token))
+        components.queryItems = items
+        guard let url = components.url?.absoluteString else { throw Abort(.internalServerError) }
+        return url
     }
 
     func verify(token rawToken: String, on req: Request) async throws {

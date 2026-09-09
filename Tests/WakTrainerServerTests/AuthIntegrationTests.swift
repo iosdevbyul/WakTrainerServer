@@ -42,7 +42,8 @@ struct AuthIntegrationTests {
             try app.register(collection: AuthController(
                 emailService: EmailService(transport: emailService),
                 passwordResetURLBase: "https://example.com/reset-password",
-                emailVerificationURLBase: "https://example.com/verify-email"
+                emailVerificationURLBase: "https://example.com/verify-email",
+                emailChangeURLBase: "https://example.com/change-email?source=mail&token=replace-me"
             ))
             try await app.autoMigrate()
             // Simulate upgrading an existing installation before adding the new fields.
@@ -56,6 +57,17 @@ struct AuthIntegrationTests {
             try await app.autoMigrate()
             let legacyUser = try #require(try await User.find(legacyID, on: app.db))
             #expect(!legacyUser.isEmailVerified)
+            // Upgrade an existing verified schema without touching users or sessions.
+            let legacySessionID = UUID()
+            try await RefreshToken(id: legacySessionID, userID: legacyID,
+                tokenHash: AuthSession.hash(AuthSession.randomToken()),
+                expiresAt: Date().addingTimeInterval(3600)).create(on: app.db)
+            app.migrations.add(AddEmailChangeMigration())
+            try await app.autoMigrate()
+            try await app.autoMigrate() // pre-deploy retry is a no-op
+            #expect(try await User.find(legacyID, on: app.db)?.email == legacyUser.email)
+            #expect(try await RefreshToken.find(legacySessionID, on: app.db) != nil)
+            #expect(try await EmailChangeToken.query(on: app.db).count() == 0)
             try await legacyUser.delete(on: app.db)
         }) { app in
             // Valid forgot-password requests query the database, even for unknown users.
@@ -134,6 +146,7 @@ struct AuthIntegrationTests {
             #expect(deletedLogin.status == .unauthorized)
             try await verifyPasswordReset(app, emailService: emailService)
             try await verifyEmailVerification(app, emailService: emailService)
+            try await verifyEmailChange(app, emailService: emailService)
             try await verifyEmailRateLimits(app)
             try await verifyRateLimits(app)
             try await app.autoRevert()

@@ -56,3 +56,12 @@ struct VerifyEmailRequestDTO: Content {
 struct ResendVerificationEmailRequestDTO: Content {
     let email: String
 }
+
+struct RequestEmailChangeRequestDTO: Content {
+    let currentPassword: String
+    let newEmail: String
+}
+
+struct ConfirmEmailChangeRequestDTO: Content {
+    let token: String
+}
