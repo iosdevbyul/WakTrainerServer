@@ -9,7 +9,7 @@ extension AuthController {
         guard let userID = UUID(uuidString: payload.subject.value) else { throw Abort(.unauthorized) }
         return try await req.db.transaction { db in
             _ = try await AuthSession.lockUser(userID, on: db)
-            _ = try await AuthSession.validate(payload, on: db)
+            _ = try await AuthSession.validate(payload, on: db, request: req)
             try await AuthSession.cleanupExpired(for: userID, on: db)
             let sessions = try await RefreshToken.query(on: db)
                 .filter(\.$user.$id == userID).filter(\.$expiresAt > Date())
@@ -32,7 +32,7 @@ extension AuthController {
         }
         try await req.db.transaction { db in
             _ = try await AuthSession.lockUser(userID, on: db)
-            _ = try await AuthSession.validate(payload, on: db)
+            _ = try await AuthSession.validate(payload, on: db, request: req)
             // Never resolve a target outside this user's ownership scope. Legacy rows use id.
             let query = RefreshToken.query(on: db).filter(\.$user.$id == userID)
                 .group(.or) { group in
@@ -45,6 +45,7 @@ extension AuthController {
                 throw Abort(.notFound, reason: "세션을 찾을 수 없습니다.")
             }
             try await query.delete()
+            req.auditContext.sessionManagementID = target
         }
         return .init(message: "세션이 로그아웃되었습니다.")
     }
@@ -66,7 +67,7 @@ extension AuthController {
         guard let userID = UUID(uuidString: payload.subject.value) else { throw Abort(.unauthorized) }
         try await req.db.transaction { db in
             _ = try await AuthSession.lockUser(userID, on: db)
-            let current = try await AuthSession.validate(payload, on: db)
+            let current = try await AuthSession.validate(payload, on: db, request: req)
             let query = RefreshToken.query(on: db).filter(\.$user.$id == userID)
             if keepingCurrent { query.filter(\.$id != (try current.requireID())) }
             try await query.delete()

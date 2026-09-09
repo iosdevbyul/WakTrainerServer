@@ -16,7 +16,7 @@ struct EmailChangeService: Sendable {
             let allowed = try await emailService.withRequest(to: newEmail, action: .emailChangeVerification, on: req) {
                 let prepared = try await req.db.transaction { db in
                     let user = try await AuthSession.lockUser(userID, on: db)
-                    _ = try await AuthSession.validate(payload, on: db)
+                    _ = try await AuthSession.validate(payload, on: db, request: req)
                     guard try await req.password.async.verify(currentPassword, created: user.passwordHash) else {
                         throw Abort(.unauthorized, reason: "현재 비밀번호가 올바르지 않습니다.")
                     }
@@ -60,7 +60,7 @@ struct EmailChangeService: Sendable {
         do {
             try await req.db.transaction { db in
                 let user = try await AuthSession.lockUser(userID, on: db)
-                let session = try await AuthSession.validate(payload, on: db)
+                let session = try await AuthSession.validate(payload, on: db, request: req)
                 guard let token = try await EmailChangeToken.query(on: db)
                     .filter(\.$user.$id == userID).filter(\.$tokenHash == hash).first(),
                       token.expiresAt > Date(), token.pendingEmail != user.email else { throw invalid }

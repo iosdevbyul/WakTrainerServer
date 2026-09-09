@@ -31,6 +31,13 @@ struct AuthIntegrationTests {
                 password: Environment.get("TEST_DATABASE_PASSWORD"),
                 database: name, tls: .disable
             )), as: .psql)
+            app.databases.use(.postgres(configuration: .init(
+                hostname: Environment.get("TEST_DATABASE_HOST") ?? "127.0.0.1",
+                port: Environment.get("TEST_DATABASE_PORT").flatMap(Int.init) ?? 5432,
+                username: Environment.get("TEST_DATABASE_USERNAME") ?? "vapor",
+                password: Environment.get("TEST_DATABASE_PASSWORD"),
+                database: name, tls: .disable
+            ), connectionPoolTimeout: .milliseconds(250)), as: .audit, isDefault: false)
             await app.jwt.keys.add(hmac: .init(from: AuthSession.randomToken()), digestAlgorithm: .sha256)
             app.migrations.add(
                 CreateUserMigration(),
@@ -43,7 +50,8 @@ struct AuthIntegrationTests {
                 emailService: EmailService(transport: emailService),
                 passwordResetURLBase: "https://example.com/reset-password",
                 emailVerificationURLBase: "https://example.com/verify-email",
-                emailChangeURLBase: "https://example.com/change-email?source=mail&token=replace-me"
+                emailChangeURLBase: "https://example.com/change-email?source=mail&token=replace-me",
+                auditLog: .init(hashKey: "audit-integration-fixture-key")
             ))
             try await app.autoMigrate()
             // Simulate upgrading an existing installation before adding the new fields.
@@ -75,6 +83,14 @@ struct AuthIntegrationTests {
             try await app.autoMigrate()
             #expect(try await RefreshToken.find(legacySessionID, on: app.db) != nil)
             #expect(try await EmailChangeToken.query(on: app.db).count() == 0)
+            try await CreateAuditLogMigration().prepare(on: app.db)
+            #expect(try await AuditLog.query(on: app.db).count() == 0)
+            try await CreateAuditLogMigration().revert(on: app.db)
+            #expect(try await RefreshToken.find(legacySessionID, on: app.db) != nil)
+            app.migrations.add(CreateAuditLogMigration())
+            try await app.autoMigrate()
+            try await app.autoMigrate()
+            #expect(try await RefreshToken.find(legacySessionID, on: app.db) != nil)
             try await legacyUser.delete(on: app.db)
         }) { app in
             // Valid forgot-password requests query the database, even for unknown users.
@@ -158,6 +174,7 @@ struct AuthIntegrationTests {
             try await verifySessionRaces(app)
             try await verifyEmailRateLimits(app)
             try await verifyRateLimits(app)
+            try await verifyAuditLogging(app, emailService: emailService)
             try await app.autoRevert()
         }
     }

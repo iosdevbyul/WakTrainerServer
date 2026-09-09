@@ -5,6 +5,11 @@ import Testing
 import VaporTesting
 import Foundation
 
+private struct SessionErrorResponse: Content, Equatable {
+    let error: Bool
+    let reason: String
+}
+
 struct SessionTestClient: Sendable {
     let app: Application
 
@@ -95,7 +100,7 @@ extension AuthIntegrationTests {
         let foreign = try await client.request(.DELETE, "sessions/" + otherRow.managementIdentifier().uuidString, session: first)
         #expect(missing.status == .notFound)
         #expect(foreign.status == .notFound)
-        #expect(missing.body.string == foreign.body.string)
+        #expect(try missing.content.decode(SessionErrorResponse.self) == foreign.content.decode(SessionErrorResponse.self))
         #expect(try await client.request(.DELETE, "sessions/invalid", session: first).status == .badRequest)
         #expect(try await client.request(.GET, "me", session: stranger).status == .ok)
 

@@ -28,6 +28,10 @@ func configure(_ app: Application) async throws {
         as: .psql
     )
 
+    // Audit writes use a separate small pool so a slow audit table cannot occupy auth connections.
+    app.databases.use(.postgres(configuration: postgresConfiguration,
+        maxConnectionsPerEventLoop: 1, connectionPoolTimeout: .milliseconds(250)), as: .audit, isDefault: false)
+
     guard let jwtSecret = Environment.get("JWT_SECRET"),
           !jwtSecret.isEmpty else {
         throw Abort(.internalServerError, reason: "JWT_SECRET environment variable is required.")
@@ -50,5 +54,6 @@ func configure(_ app: Application) async throws {
     app.migrations.add(AddEmailChangeMigration())
     app.migrations.add(AddSessionMetadataMigration())
     app.migrations.add(IndexSessionUserExpiryMigration())
+    app.migrations.add(CreateAuditLogMigration())
     try routes(app)
 }

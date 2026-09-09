@@ -4,13 +4,15 @@ import JWT
 
 struct AuthController: RouteCollection {
 
+    private let auditLog: AuditLogService
     private let emailService: EmailService
     private let passwordResetURLBase: String?
     private let emailChange: EmailChangeService
     private let emailVerification: EmailVerificationService
 
     init(emailService: EmailService = EmailService(), passwordResetURLBase: String? = nil,
-         emailVerificationURLBase: String? = nil, emailChangeURLBase: String? = nil) {
+         emailVerificationURLBase: String? = nil, emailChangeURLBase: String? = nil, auditLog: AuditLogService = .init()) {
+        self.auditLog = auditLog
         self.emailChange = .init(emailService: emailService, verificationURLBase: emailChangeURLBase)
         self.emailService = emailService
         self.passwordResetURLBase = passwordResetURLBase
@@ -19,23 +21,23 @@ struct AuthController: RouteCollection {
 
     func boot(routes: any RoutesBuilder) throws {
         let auth = routes.grouped("auth")
-        auth.post("request-email-change", use: requestEmailChange)
-        auth.post("confirm-email-change", use: confirmEmailChange)
+        auth.grouped(AuditLogMiddleware(service: auditLog, event: .emailChangeRequested, endpoint: .requestEmailChange)).post("request-email-change", use: requestEmailChange)
+        auth.grouped(AuditLogMiddleware(service: auditLog, event: .emailChangeSucceeded, endpoint: .confirmEmailChange)).post("confirm-email-change", use: confirmEmailChange)
         auth.get("sessions", use: sessions)
-        auth.delete("sessions", ":sessionID", use: revokeSession)
-        auth.post("logout-other-sessions", use: logoutOtherSessions)
-        auth.post("logout-all", use: logoutAll)
-        auth.post("login", use: login)
-        auth.post("signup", use: signUp)
-        auth.post("refresh", use: refresh)
+        auth.grouped(AuditLogMiddleware(service: auditLog, event: .sessionRevoked, endpoint: .sessionRevoke)).delete("sessions", ":sessionID", use: revokeSession)
+        auth.grouped(AuditLogMiddleware(service: auditLog, event: .logoutOtherSessions, endpoint: .logoutOtherSessions)).post("logout-other-sessions", use: logoutOtherSessions)
+        auth.grouped(AuditLogMiddleware(service: auditLog, event: .logoutAll, endpoint: .logoutAll)).post("logout-all", use: logoutAll)
+        auth.grouped(AuditLogMiddleware(service: auditLog, event: .loginSucceeded, endpoint: .login)).post("login", use: login)
+        auth.grouped(AuditLogMiddleware(service: auditLog, event: .signUpSucceeded, endpoint: .signup)).post("signup", use: signUp)
+        auth.grouped(AuditLogMiddleware(service: auditLog, event: .refreshSucceeded, endpoint: .refresh)).post("refresh", use: refresh)
         auth.get("me", use: me)
-        auth.post("logout", use: logout)
-        auth.delete("withdraw", use: withdraw)
-        auth.post("forgot-password", use: forgotPassword)
-        auth.post("change-password", use: changePassword)
-        auth.post("reset-password", use: resetPassword)
-        auth.post("verify-email", use: verifyEmail)
-        auth.post("resend-verification-email", use: resendVerificationEmail)
+        auth.grouped(AuditLogMiddleware(service: auditLog, event: .logout, endpoint: .logout)).post("logout", use: logout)
+        auth.grouped(AuditLogMiddleware(service: auditLog, event: .accountWithdrawn, endpoint: .withdraw)).delete("withdraw", use: withdraw)
+        auth.grouped(AuditLogMiddleware(service: auditLog, event: .passwordResetRequested, endpoint: .forgotPassword)).post("forgot-password", use: forgotPassword)
+        auth.grouped(AuditLogMiddleware(service: auditLog, event: .passwordChanged, endpoint: .changePassword)).post("change-password", use: changePassword)
+        auth.grouped(AuditLogMiddleware(service: auditLog, event: .passwordResetSucceeded, endpoint: .resetPassword)).post("reset-password", use: resetPassword)
+        auth.grouped(AuditLogMiddleware(service: auditLog, event: .emailVerificationSucceeded, endpoint: .verifyEmail)).post("verify-email", use: verifyEmail)
+        auth.grouped(AuditLogMiddleware(service: auditLog, event: .emailVerificationResendRequested, endpoint: .resendVerificationEmail)).post("resend-verification-email", use: resendVerificationEmail)
     }
 
     private func validate(email: String, password: String) throws {
@@ -56,6 +58,7 @@ struct AuthController: RouteCollection {
     func login(req: Request) async throws -> SessionResponseDTO {
         try await LoginRateLimiter.checkIP(req)
         let body = try req.content.decode(AuthRequestDTO.self)
+        req.auditEmail(body.email)
         try validate(email: body.email, password: body.password)
         try await LoginRateLimiter.checkEmail(body.email, on: req.db)
         guard let existing = try await User.query(on: req.db).filter(\.$email == body.email).first() else {
@@ -75,6 +78,7 @@ struct AuthController: RouteCollection {
     @Sendable
     func signUp(req: Request) async throws -> SessionResponseDTO {
         let body = try req.content.decode(AuthRequestDTO.self)
+        req.auditEmail(body.email)
         try validate(email: body.email, password: body.password)
         guard try await User.query(on: req.db).filter(\.$email == body.email).first() == nil else {
             throw Abort(.conflict, reason: "이미 사용 중인 이메일입니다.")
@@ -108,6 +112,7 @@ struct AuthController: RouteCollection {
     @Sendable
     func resendVerificationEmail(req: Request) async throws -> MessageResponseDTO {
         let body = try req.content.decode(ResendVerificationEmailRequestDTO.self)
+        req.auditEmail(body.email)
         guard body.email.utf8.count <= 254, body.email.contains("@"), body.email.contains(".") else {
             throw Abort(.badRequest, reason: "올바른 이메일 형식을 입력해주세요.")
         }
@@ -125,7 +130,7 @@ struct AuthController: RouteCollection {
     @Sendable
     func requestEmailChange(req: Request) async throws -> MessageResponseDTO {
         let payload = try await AuthSession.payload(from: req)
-        _ = try await AuthSession.validate(payload, on: req.db)
+        _ = try await AuthSession.validate(payload, on: req.db, request: req)
         let body = try req.content.decode(RequestEmailChangeRequestDTO.self)
         // Preserve signup/login's exact email comparison and storage policy.
         guard body.newEmail.utf8.count <= 254, body.newEmail.contains("@"), body.newEmail.contains("."),
@@ -166,7 +171,7 @@ struct AuthController: RouteCollection {
     @Sendable
     func me(req: Request) async throws -> UserResponseDTO {
         let payload = try await AuthSession.payload(from: req)
-        _ = try await AuthSession.validate(payload, on: req.db)
+        _ = try await AuthSession.validate(payload, on: req.db, request: req)
         guard let user = try await User.find(UUID(uuidString: payload.subject.value), on: req.db) else {
             throw Abort(.unauthorized)
         }
@@ -179,7 +184,7 @@ struct AuthController: RouteCollection {
         guard let userID = UUID(uuidString: payload.subject.value) else { throw Abort(.unauthorized) }
         try await req.db.transaction { db in
             _ = try await AuthSession.lockUser(userID, on: db)
-            let session = try await AuthSession.validate(payload, on: db)
+            let session = try await AuthSession.validate(payload, on: db, request: req)
             try await session.delete(on: db)
         }
         return .init(message: "Successfully logged out.")
@@ -191,7 +196,7 @@ struct AuthController: RouteCollection {
         guard let userID = UUID(uuidString: payload.subject.value) else { throw Abort(.unauthorized) }
         try await req.db.transaction { db in
             let user = try await AuthSession.lockUser(userID, on: db)
-            _ = try await AuthSession.validate(payload, on: db)
+            _ = try await AuthSession.validate(payload, on: db, request: req)
             // The foreign key cascades deletion to every session for this user.
             try await user.delete(on: db)
         }
@@ -211,11 +216,12 @@ struct AuthController: RouteCollection {
         let passwordHash = try await req.password.async.hash(body.newPassword)
         try await req.db.transaction { db in
             let user = try await AuthSession.lockUser(userID, on: db)
-            _ = try await AuthSession.validate(payload, on: db)
+            _ = try await AuthSession.validate(payload, on: db, request: req)
             guard try await req.password.async.verify(body.currentPassword, created: user.passwordHash) else {
                 throw Abort(.unauthorized, reason: "현재 비밀번호가 올바르지 않습니다.")
             }
             try await EmailChangeToken.query(on: db).filter(\.$user.$id == userID).delete()
+            req.auditIdentity(userID)
             user.passwordHash = passwordHash
             try await user.update(on: db)
             try await RefreshToken.query(on: db).filter(\.$user.$id == userID).delete()
@@ -226,6 +232,7 @@ struct AuthController: RouteCollection {
     @Sendable
     func forgotPassword(req: Request) async throws -> MessageResponseDTO {
         let body = try req.content.decode(ForgotPasswordRequestDTO.self)
+        req.auditEmail(body.email)
 
         guard body.email.utf8.count <= 254,
               body.email.contains("@"),
@@ -333,6 +340,7 @@ struct AuthController: RouteCollection {
             }
 
             try await EmailChangeToken.query(on: db).filter(\.$user.$id == userID).delete()
+            req.auditIdentity(userID)
             user.passwordHash = passwordHash
             try await user.update(on: db)
 

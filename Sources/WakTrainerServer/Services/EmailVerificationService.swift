@@ -79,6 +79,7 @@ struct EmailVerificationService: Sendable {
             user.isEmailVerified = true
             try await user.update(on: db)
             try await token.delete(on: db)
+            req.auditIdentity(userID)
         }
     }
 }

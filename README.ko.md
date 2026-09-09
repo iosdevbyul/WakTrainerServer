@@ -19,6 +19,7 @@ WakTrainerServer는 Vapor, Swift 6.3, PostgreSQL 기반의 인증 백엔드 서�
 - 회원탈퇴
 - 로그인 요청 제한
 - 사용자 트리거 이메일 발송 공통 제한
+- PostgreSQL 기반 보안 감사 로그
 
 ## 요구사항
 
@@ -51,6 +52,7 @@ openssl rand -base64 48
 
 | 변수 | 필수 여부 / 기본값 |
 | --- | --- |
+| `AUDIT_HASH_KEY` | 감사 식별값용 별도 HMAC-SHA256 키. 없으면 hash 필드만 생략 |
 | `JWT_SECRET` | 필수 |
 | `DATABASE_PASSWORD` | 필수 |
 | `DATABASE_HOST` | 기본값 `127.0.0.1` |
@@ -131,6 +133,7 @@ Dockerfile과 Docker Compose 시작 설정은 database migration을 자동으로
 7. `AddEmailChangeMigration`
 8. `AddSessionMetadataMigration`
 9. `IndexSessionUserExpiryMigration`
+10. `CreateAuditLogMigration`
 
 `AddEmailVerificationMigration`은 사용자 이메일 인증 상태와 이메일 인증 토큰 테이블을 추가합니다.
 
@@ -500,6 +503,27 @@ EMAIL_TRUST_RAILWAY_PROXY=true
 
 임의의 `X-Forwarded-For` 값은 신뢰하지 않습니다.
 
+## 보안 감사 로그
+
+주요 인증·세션·비밀번호·이메일 변경·회원탈퇴 및 요청 제한 이벤트를 별도 `audit_logs` 테이블에 기록합니다.
+이벤트별 기록 의미는 [감사 로그 문서](docs/audit-logging.md)를 참고하세요. 조회 API는 제공하지 않습니다.
+
+비즈니스 transaction 성공 후 best-effort로 기록하며, audit 저장 실패로 인증 응답을 변경하지 않습니다.
+완전한 기록 보장은 아니며 과부하·timeout·프로세스 종료 시 누락될 수 있습니다.
+별도 audit 연결 풀과 짧은 timeout으로 인증 풀에 미치는 영향을 제한합니다.
+
+이메일/IP/clientId 원문은 저장하지 않고, AUDIT_HASH_KEY로 HMAC-SHA256 처리합니다.
+키가 없으면 hash 필드만 생략합니다. 해시도 가명 식별 정보로 취급해야 합니다.
+Credential·토큰·토큰 해시·secret·기기 이름·User-Agent·요청 body·오류 원문은 기록하지 않습니다.
+metadata는 허용된 enum과 숫자 필드만 담습니다.
+
+로그인/refresh 실패, 요청 제한, 익명 메일 요청은 eventType과 식별 해시, action(이메일 제한),
+분 단위 bucket으로 중복 억제합니다. 서로 다른 source를 전역 한 건으로 합치지 않으며 정확한 요청 횟수 집계는 아닙니다.
+회원탈퇴 시 기존 이력은 user_id를 null로 바꿔 보존합니다.
+
+보존 기준은 90일이며 **자동 삭제는 5번 DB maintenance 작업에서 구현할 예정**입니다.
+그 전에는 자동으로 만료되지 않습니다. 운영 조회·수동 정리 SQL과 migration 설명은 [감사 로그 문서](docs/audit-logging.md)를 참고하세요.
+
 ## 테스트
 
 실행:
@@ -596,7 +620,10 @@ RESEND_API_KEY
 PASSWORD_RESET_URL_BASE
 EMAIL_VERIFICATION_URL_BASE
 EMAIL_CHANGE_URL_BASE
+AUDIT_HASH_KEY
 ```
+
+`AUDIT_HASH_KEY`는 선택 사항입니다. 운영에서는 별도 키 설정을 권장하며, 없으면 감사 이벤트는 기록하되 식별 hash 필드만 생략합니다.
 
 `EMAIL_TRUST_RAILWAY_PROXY`는 trusted proxy 구성을 확인한 뒤에만 활성화해야 합니다.
 
@@ -606,6 +633,7 @@ EMAIL_CHANGE_URL_BASE
 
 추가 문서:
 
+- [보안 감사 로그](docs/audit-logging.md)
 - [세션 관리](docs/session-management.md)
 - [이메일 변경](docs/email-change.md)
 - [이메일 인증](docs/email-verification.md)

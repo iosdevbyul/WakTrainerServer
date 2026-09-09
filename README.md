@@ -19,6 +19,7 @@ It currently supports:
 - Account deletion
 - Login rate limiting
 - Shared rate limiting for user-triggered email delivery
+- PostgreSQL security audit logging
 
 ## Requirements
 
@@ -51,6 +52,7 @@ openssl rand -base64 48
 
 | Variable | Requirement / default |
 | --- | --- |
+| `AUDIT_HASH_KEY` | Separate HMAC-SHA256 key for audit identifiers; missing key omits hash fields only |
 | `JWT_SECRET` | Required |
 | `DATABASE_PASSWORD` | Required |
 | `DATABASE_HOST` | Defaults to `127.0.0.1` |
@@ -131,6 +133,7 @@ The current migration registration order is:
 7. `AddEmailChangeMigration`
 8. `AddSessionMetadataMigration`
 9. `IndexSessionUserExpiryMigration`
+10. `CreateAuditLogMigration`
 
 `AddEmailVerificationMigration` adds the user's email-verification state and the email-verification token table.
 
@@ -503,6 +506,27 @@ Enable this only when the deployment topology guarantees that requests originate
 
 Arbitrary `X-Forwarded-For` values are not trusted.
 
+## Security audit logging
+
+Major authentication, session, password, email, withdrawal, and rate-limit events are written to a separate
+`audit_logs` table. See [audit logging](docs/audit-logging.md) for event semantics. No audit-query API is exposed.
+
+Writes are best-effort after business transaction success. Audit storage failures do not change authentication
+responses. Overload, timeouts, and process termination can cause missing events; delivery is not guaranteed.
+A separate audit connection pool and short database timeouts limit impact on the authentication pool.
+
+Email/IP/clientId values use HMAC-SHA256 with a separate AUDIT_HASH_KEY; raw values are not stored.
+Without the key, hash fields are omitted while events are still recorded. Hashes remain pseudonymous identifiers.
+Credentials, tokens, token hashes, secrets, device names, User-Agent, request bodies, and raw errors are excluded.
+Metadata accepts only predefined enum and numeric fields.
+
+Login/refresh failures, rate-limit blocks, and anonymous mail requests are deduplicated by event type,
+identifier hashes, action (for email limits), and minute bucket. Different sources are not merged into one global event;
+these records are samples rather than exact request counts. Withdrawal preserves history with user_id set to null.
+
+The retention target is 90 days. **Automatic deletion is deferred to task 5, DB maintenance.** Rows do not expire
+automatically yet. See [audit logging](docs/audit-logging.md) for operator queries, manual cleanup SQL, and migration details.
+
 ## Testing
 
 Run:
@@ -599,7 +623,10 @@ RESEND_API_KEY
 PASSWORD_RESET_URL_BASE
 EMAIL_VERIFICATION_URL_BASE
 EMAIL_CHANGE_URL_BASE
+AUDIT_HASH_KEY
 ```
+
+`AUDIT_HASH_KEY` is optional. Configure a separate key in production; without it, audit events are still recorded but identifier hash fields are omitted.
 
 `EMAIL_TRUST_RAILWAY_PROXY` should only be enabled after validating the trusted proxy configuration.
 
@@ -609,6 +636,7 @@ Operational monitoring, production sender/domain configuration, backup strategy,
 
 Additional documentation:
 
+- [Security audit logging](docs/audit-logging.md)
 - [Session management](docs/session-management.md)
 - [Email changes](docs/email-change.md)
 - [Email verification](docs/email-verification.md)

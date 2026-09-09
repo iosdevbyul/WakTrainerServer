@@ -63,7 +63,11 @@ struct EmailService: Sendable {
     /// The message recipient is bound to the quota; each request sends at most once.
     func withRequest(to email: String, action: EmailAction, on req: Request,
                      prepare: () async throws -> EmailMessage?) async throws -> Bool {
-        guard try await limiter.allow(to: email, action: action, on: req) else { return false }
+        req.auditEmail(email)
+        guard try await limiter.allow(to: email, action: action, on: req) else {
+            req.auditContext.emailRateLimited = AuditMetadata.Action(rawValue: action.rawValue)
+            return false
+        }
         if let message = try await prepare() {
             guard message.recipient == email else { throw Abort(.internalServerError) }
             try await transport.send(message, on: req)

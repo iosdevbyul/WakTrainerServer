@@ -40,7 +40,7 @@ enum AuthSession {
         }
     }
 
-    static func validate(_ payload: AccessTokenPayload, on database: any Database) async throws -> RefreshToken {
+    static func validate(_ payload: AccessTokenPayload, on database: any Database, request: Request? = nil) async throws -> RefreshToken {
         guard let sessionID = payload.sessionID,
               let userID = UUID(uuidString: payload.subject.value),
               let session = try await RefreshToken.find(sessionID, on: database),
@@ -48,6 +48,7 @@ enum AuthSession {
               session.expiresAt > Date() else {
             throw Abort(.unauthorized, reason: "만료되었거나 폐기된 세션입니다.")
         }
+        request?.auditIdentity(userID, session: session)
         return session
     }
 
@@ -99,6 +100,7 @@ enum AuthSession {
         session.deviceName = previous == nil ? deviceName(from: request) : previous?.deviceName
         try await cleanupExpired(for: userID, on: database)
         try await session.create(on: database)
+        request.auditIdentity(userID, session: session)
         return SessionResponseDTO(
             user: .init(id: userID.uuidString, email: user.email, isEmailVerified: user.isEmailVerified),
             accessToken: accessToken,
