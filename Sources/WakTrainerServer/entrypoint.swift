@@ -2,6 +2,11 @@ import Vapor
 import Logging
 import NIOCore
 import NIOPosix
+#if canImport(Glibc)
+import Glibc
+#else
+import Darwin
+#endif
 
 @main
 enum Entrypoint {
@@ -22,6 +27,11 @@ enum Entrypoint {
             try await configure(app)
             try await app.execute()
         } catch {
+            if error is MaintenanceCommandFailure {
+                app.logger.error("Database maintenance failed; check target results and retention configuration.")
+                try? await app.asyncShutdown()
+                exit(EXIT_FAILURE)
+            }
             app.logger.report(error: error)
             try? await app.asyncShutdown()
             throw error

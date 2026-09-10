@@ -175,6 +175,7 @@ struct AuthIntegrationTests {
             try await verifyEmailRateLimits(app)
             try await verifyRateLimits(app)
             try await verifyAuditLogging(app, emailService: emailService)
+            try await verifyMaintenance(app, emailService: emailService)
             try await app.autoRevert()
         }
     }

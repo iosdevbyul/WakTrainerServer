@@ -85,7 +85,7 @@ createdAt까지 없는 기존 행은 startedAt을 모르는 상태로 유지한�
 세션 발급 및 목록 조회 시 해당 사용자의 만료 행을 최대 100개씩 삭제한다.
 다른 사용자의 행은 건드리지 않는다. `(user_id, expires_at, id)` 인덱스로 조회 범위를 제한한다.
 100개 이상 남아 있어도 목록에서는 모든 만료 행을 제외하고 인증에도 사용할 수 없다.
-활동 없는 계정의 만료 행은 남을 수 있다. 전체 정리는 향후 maintenance 작업 대상으로 두며 scheduler는 추가하지 않는다.
+전체 만료 행은 별도 [maintenance command](database-maintenance.md)에서 정리한다. 기존 사용자별 lazy cleanup은 유지하며 잠긴 행은 건너뛴다.
 refresh에서 소비한 이전 행은 기존처럼 즉시 삭제하므로 사용한 refresh token 이력을 누적 저장하지 않는다.
 
 ## Railway migration

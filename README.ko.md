@@ -312,7 +312,7 @@ Refresh와 세션 폐기는 동일한 사용자별 DB 잠금을 사용합니다.
 
 세션 발급과 목록 조회 시 해당 사용자의 만료 행을 최대 100개씩 정리합니다.
 정리할 행이 남아 있더라도 활성 목록에서는 모든 만료 행을 제외합니다.
-활동이 없는 계정의 만료 행은 남을 수 있으며, 별도 백그라운드 정리 scheduler는 없습니다.
+전체 만료 행은 별도 [maintenance command](docs/database-maintenance.md)로 정리할 수 있으며 기존 lazy cleanup도 유지합니다.
 
 ### 이메일 인증 상태
 
@@ -521,8 +521,7 @@ metadata는 허용된 enum과 숫자 필드만 담습니다.
 분 단위 bucket으로 중복 억제합니다. 서로 다른 source를 전역 한 건으로 합치지 않으며 정확한 요청 횟수 집계는 아닙니다.
 회원탈퇴 시 기존 이력은 user_id를 null로 바꿔 보존합니다.
 
-보존 기준은 90일이며 **자동 삭제는 5번 DB maintenance 작업에서 구현할 예정**입니다.
-그 전에는 자동으로 만료되지 않습니다. 운영 조회·수동 정리 SQL과 migration 설명은 [감사 로그 문서](docs/audit-logging.md)를 참고하세요.
+보존 기준은 기본 90일이며 maintenance command 실행 시 정리합니다. 운영 조회와 개인정보 정책은 [감사 로그 문서](docs/audit-logging.md)를 참고하세요.
 
 ## 테스트
 
@@ -639,3 +638,12 @@ AUDIT_HASH_KEY
 - [이메일 인증](docs/email-verification.md)
 - [공통 이메일 발송 제한](docs/email-rate-limits.md)
 - [AuthenticationKit Demo E2E 가이드](docs/authentication-e2e.md)
+
+## Database Maintenance
+
+웹 서비스에서 migration을 적용한 뒤 별도 Railway Cron 서비스의 시작 명령을
+`./WakTrainerServer maintenance --env production`, 주기를 `0 * * * *`(UTC 매시간)로 설정합니다.
+동일 binary가 만료된 세션·토큰·rate limit과 오래된 audit log를 batch당 500개, 테이블당 최대
+20 batch로 정리합니다. `AUDIT_RETENTION_DAYS` 기본값은 90이며 90 미만은 거부합니다.
+기존 lazy cleanup은 유지합니다. 일부 대상이 실패해도 나머지는 시도한 후 실패 종료합니다.
+배포·동시성·처리 제한·운영 로그는 [DB maintenance 문서](docs/database-maintenance.md)를 참고하세요.

@@ -32,6 +32,10 @@ func configure(_ app: Application) async throws {
     app.databases.use(.postgres(configuration: postgresConfiguration,
         maxConnectionsPerEventLoop: 1, connectionPoolTimeout: .milliseconds(250)), as: .audit, isDefault: false)
 
+    app.databases.use(.postgres(configuration: postgresConfiguration,
+        maxConnectionsPerEventLoop: 1, connectionPoolTimeout: .seconds(1)), as: .maintenance, isDefault: false)
+    app.asyncCommands.use(MaintenanceCommand(), as: "maintenance")
+
     guard let jwtSecret = Environment.get("JWT_SECRET"),
           !jwtSecret.isEmpty else {
         throw Abort(.internalServerError, reason: "JWT_SECRET environment variable is required.")
@@ -55,5 +59,6 @@ func configure(_ app: Application) async throws {
     app.migrations.add(AddSessionMetadataMigration())
     app.migrations.add(IndexSessionUserExpiryMigration())
     app.migrations.add(CreateAuditLogMigration())
+    app.migrations.add(IndexMaintenanceExpiryMigration())
     try routes(app)
 }

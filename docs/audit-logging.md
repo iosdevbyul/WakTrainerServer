@@ -109,7 +109,7 @@ Cache는 로컬 분 시각을 사용하므로 서버 시계 차이에 따라 경
 source가 계속 바뀌면 서로 다른 감사 행이 생성된다. 전역 1건으로 합치지는 않으며, 대신 프로세스별
 동시 감사 쓰기를 4개로 제한하고 초과 기록은 best-effort로 생략한다. 별도 풀의 짧은 대기 timeout과
 DB timeout으로 인증 연결 점유를 제한한다. 이 제한은 새 API rate limiter나 전체 디스크 사용 상한이 아니다.
-운영 수집량을 관찰하고 다음 maintenance 단계의 보존 기간 삭제를 적용해야 한다.
+운영 수집량을 관찰하고 maintenance command를 정기 실행해야 한다.
 
 ## 실패 격리와 트랜잭션
 
@@ -133,7 +133,7 @@ statement_timeout 250ms, lock_timeout 100ms를 적용한다. 개별 SQL timeout�
 
 ## 보존과 운영 조회
 
-보존 기준은 90일이다. **이번 단계에서는 자동 삭제하지 않는다. 5번 DB maintenance 작업에서 구현한다.**
+보존 기준은 기본 90일이다. [DB maintenance](database-maintenance.md)의 별도 command가 보존 기간을 지난 행을 정리한다. `AUDIT_RETENTION_DAYS`로 늘릴 수 있으며 90일 미만은 거부한다.
 그 전에는 아래 SQL 등 승인된 운영 절차로 정리해야 하며, 90일이 지나도 저절로 삭제되지는 않는다.
 다른 인증 토큰 테이블의 정리 정책과는 별개다.
 
@@ -155,16 +155,7 @@ WHERE occurred_at >= CURRENT_TIMESTAMP - INTERVAL '1 day'
 GROUP BY event_type;
 ```
 
-90일 초과 행의 제한된 개수 정리 (트랜잭션을 짧게 유지하며 필요 시 반복):
-
-```sql
-DELETE FROM audit_logs WHERE id IN (
-    SELECT id FROM audit_logs
-    WHERE occurred_at < CURRENT_TIMESTAMP - INTERVAL '90 days'
-    ORDER BY occurred_at
-    LIMIT 1000 FOR UPDATE SKIP LOCKED
-);
-```
+정리는 중앙 retention 설정과 batch 정책을 적용하는 [maintenance command](database-maintenance.md)를 사용한다.
 
 ## Migration과 검증
 

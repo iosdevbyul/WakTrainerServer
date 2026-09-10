@@ -313,7 +313,7 @@ return `401`; retry with the newly issued Bearer token.
 
 Session issuance and listing lazily remove up to 100 expired rows belonging to that user.
 All expired rows are excluded from the active list, even when cleanup leaves a backlog.
-Inactive accounts can retain expired rows; no background cleanup scheduler is installed.
+Global expired-row cleanup is available through the separate [maintenance command](docs/database-maintenance.md); existing lazy cleanup remains.
 
 ### Email verification state
 
@@ -524,8 +524,7 @@ Login/refresh failures, rate-limit blocks, and anonymous mail requests are dedup
 identifier hashes, action (for email limits), and minute bucket. Different sources are not merged into one global event;
 these records are samples rather than exact request counts. Withdrawal preserves history with user_id set to null.
 
-The retention target is 90 days. **Automatic deletion is deferred to task 5, DB maintenance.** Rows do not expire
-automatically yet. See [audit logging](docs/audit-logging.md) for operator queries, manual cleanup SQL, and migration details.
+Audit retention defaults to 90 days and is enforced when the maintenance command runs. See [audit logging](docs/audit-logging.md) for operator queries and privacy policy.
 
 ## Testing
 
@@ -642,3 +641,12 @@ Additional documentation:
 - [Email verification](docs/email-verification.md)
 - [Shared email rate limiting](docs/email-rate-limits.md)
 - [AuthenticationKit Demo E2E guide](docs/authentication-e2e.md)
+
+## Database Maintenance
+
+Run `./WakTrainerServer maintenance --env production` in a separate Railway Cron service with
+schedule `0 * * * *` (hourly UTC), after the web service applies migrations. The same binary cleans
+expired session/token/rate-limit rows and old audit logs in batches of 500, at most 20 batches per
+table. `AUDIT_RETENTION_DAYS` defaults to 90; values below 90 are rejected. Existing lazy cleanup
+remains. Any target failure produces a failure exit after the other targets are attempted.
+See [database maintenance](docs/database-maintenance.md) for deployment, concurrency, limits and logs.

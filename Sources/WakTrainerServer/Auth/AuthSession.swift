@@ -68,7 +68,7 @@ enum AuthSession {
             DELETE FROM refresh_tokens WHERE id IN (
                 SELECT id FROM refresh_tokens
                 WHERE user_id = \(bind: userID) AND expires_at <= CURRENT_TIMESTAMP
-                ORDER BY expires_at, id LIMIT 100
+                ORDER BY expires_at, id LIMIT 100 FOR UPDATE SKIP LOCKED
             )
             """).run()
     }
