@@ -42,7 +42,7 @@ struct AuthController: RouteCollection {
 
     private func validate(email: String, password: String) throws {
         guard email.utf8.count <= 254, email.contains("@"), email.contains(".") else {
-            throw Abort(.badRequest, reason: "올바른 이메일 형식을 입력해주세요.")
+            throw APIError(.validationFailed, variant: .email)
         }
         try validate(password: password)
     }
@@ -50,7 +50,7 @@ struct AuthController: RouteCollection {
     private func validate(password: String) throws {
         // bcrypt uses at most 72 bytes, including for multibyte characters.
         guard (7...20).contains(password.count), password.utf8.count <= 72 else {
-            throw Abort(.badRequest, reason: "비밀번호는 7자 이상 20자 이하, UTF-8 기준 72바이트 이하로 입력해주세요.")
+            throw APIError(.validationFailed, variant: .password)
         }
     }
 
@@ -62,14 +62,14 @@ struct AuthController: RouteCollection {
         try validate(email: body.email, password: body.password)
         try await LoginRateLimiter.checkEmail(body.email, on: req.db)
         guard let existing = try await User.query(on: req.db).filter(\.$email == body.email).first() else {
-            throw Abort(.unauthorized, reason: "이메일 또는 비밀번호가 올바르지 않습니다.")
+            throw APIError(.invalidCredentials)
         }
         let userID = try existing.requireID()
         return try await req.db.transaction { db in
             let user = try await AuthSession.lockUser(userID, on: db)
             guard user.email == body.email,
                   try await req.password.async.verify(body.password, created: user.passwordHash) else {
-                throw Abort(.unauthorized, reason: "이메일 또는 비밀번호가 올바르지 않습니다.")
+                throw APIError(.invalidCredentials)
             }
             return try await AuthSession.issue(for: user, request: req, on: db)
         }
@@ -81,7 +81,7 @@ struct AuthController: RouteCollection {
         req.auditEmail(body.email)
         try validate(email: body.email, password: body.password)
         guard try await User.query(on: req.db).filter(\.$email == body.email).first() == nil else {
-            throw Abort(.conflict, reason: "이미 사용 중인 이메일입니다.")
+            throw APIError(.emailAlreadyExists)
         }
         let passwordHash = try await req.password.async.hash(body.password)
         let session: SessionResponseDTO
@@ -93,7 +93,7 @@ struct AuthController: RouteCollection {
             }
         } catch let error as any DatabaseError where error.isConstraintFailure {
             // The UNIQUE constraint also protects concurrent signups.
-            throw Abort(.conflict, reason: "이미 사용 중인 이메일입니다.")
+            throw APIError(.emailAlreadyExists)
         }
         await sendVerificationEmail(to: body.email, on: req)
         return session
@@ -114,7 +114,7 @@ struct AuthController: RouteCollection {
         let body = try req.content.decode(ResendVerificationEmailRequestDTO.self)
         req.auditEmail(body.email)
         guard body.email.utf8.count <= 254, body.email.contains("@"), body.email.contains(".") else {
-            throw Abort(.badRequest, reason: "올바른 이메일 형식을 입력해주세요.")
+            throw APIError(.validationFailed, variant: .email)
         }
         await sendVerificationEmail(to: body.email, on: req)
         return .init(message: "인증이 필요한 계정이면 이메일 인증 안내를 발송했습니다.")
@@ -135,7 +135,7 @@ struct AuthController: RouteCollection {
         // Preserve signup/login's exact email comparison and storage policy.
         guard body.newEmail.utf8.count <= 254, body.newEmail.contains("@"), body.newEmail.contains("."),
               !body.currentPassword.isEmpty, body.currentPassword.utf8.count <= 72 else {
-            throw Abort(.badRequest, reason: "올바른 이메일과 현재 비밀번호를 입력해주세요.")
+            throw APIError(.validationFailed, variant: .emailChangeInput)
         }
         try await emailChange.request(newEmail: body.newEmail, currentPassword: body.currentPassword,
                                       payload: payload, on: req)
@@ -153,16 +153,16 @@ struct AuthController: RouteCollection {
     @Sendable
     func refresh(req: Request) async throws -> SessionResponseDTO {
         let body = try req.content.decode(RefreshRequestDTO.self)
-        guard body.refreshToken.utf8.count == 64 else { throw Abort(.unauthorized) }
+        guard body.refreshToken.utf8.count == 64 else { throw APIError(.refreshTokenRejected) }
         let hash = AuthSession.hash(body.refreshToken)
         guard let existing = try await RefreshToken.query(on: req.db).filter(\.$tokenHash == hash).first() else {
-            throw Abort(.unauthorized)
+            throw APIError(.refreshTokenRejected)
         }
         let userID = existing.$user.id
         return try await req.db.transaction { db in
             let user = try await AuthSession.lockUser(userID, on: db)
             guard let session = try await RefreshToken.query(on: db).filter(\.$tokenHash == hash).first(),
-                  session.expiresAt > Date() else { throw Abort(.unauthorized) }
+                  session.expiresAt > Date() else { throw APIError(.refreshTokenRejected) }
             try await session.delete(on: db)
             return try await AuthSession.issue(for: user, request: req, on: db, rotating: session)
         }
@@ -173,7 +173,7 @@ struct AuthController: RouteCollection {
         let payload = try await AuthSession.payload(from: req)
         _ = try await AuthSession.validate(payload, on: req.db, request: req)
         guard let user = try await User.find(UUID(uuidString: payload.subject.value), on: req.db) else {
-            throw Abort(.unauthorized)
+            throw APIError(.sessionInvalid, variant: .legacyUnauthorized)
         }
         return .init(id: try user.requireID().uuidString, email: user.email, isEmailVerified: user.isEmailVerified)
     }
@@ -181,7 +181,7 @@ struct AuthController: RouteCollection {
     @Sendable
     func logout(req: Request) async throws -> MessageResponseDTO {
         let payload = try await AuthSession.payload(from: req)
-        guard let userID = UUID(uuidString: payload.subject.value) else { throw Abort(.unauthorized) }
+        guard let userID = UUID(uuidString: payload.subject.value) else { throw APIError(.sessionInvalid, variant: .legacyUnauthorized) }
         try await req.db.transaction { db in
             _ = try await AuthSession.lockUser(userID, on: db)
             let session = try await AuthSession.validate(payload, on: db, request: req)
@@ -193,7 +193,7 @@ struct AuthController: RouteCollection {
     @Sendable
     func withdraw(req: Request) async throws -> MessageResponseDTO {
         let payload = try await AuthSession.payload(from: req)
-        guard let userID = UUID(uuidString: payload.subject.value) else { throw Abort(.unauthorized) }
+        guard let userID = UUID(uuidString: payload.subject.value) else { throw APIError(.sessionInvalid, variant: .legacyUnauthorized) }
         try await req.db.transaction { db in
             let user = try await AuthSession.lockUser(userID, on: db)
             _ = try await AuthSession.validate(payload, on: db, request: req)
@@ -210,15 +210,15 @@ struct AuthController: RouteCollection {
         try validate(password: body.newPassword)
         guard !body.currentPassword.isEmpty, body.currentPassword.utf8.count <= 72,
               body.currentPassword != body.newPassword else {
-            throw Abort(.badRequest, reason: "현재 비밀번호와 다른 새 비밀번호를 입력해주세요.")
+            throw APIError(.validationFailed, variant: .passwordChange)
         }
-        guard let userID = UUID(uuidString: payload.subject.value) else { throw Abort(.unauthorized) }
+        guard let userID = UUID(uuidString: payload.subject.value) else { throw APIError(.sessionInvalid, variant: .legacyUnauthorized) }
         let passwordHash = try await req.password.async.hash(body.newPassword)
         try await req.db.transaction { db in
             let user = try await AuthSession.lockUser(userID, on: db)
             _ = try await AuthSession.validate(payload, on: db, request: req)
             guard try await req.password.async.verify(body.currentPassword, created: user.passwordHash) else {
-                throw Abort(.unauthorized, reason: "현재 비밀번호가 올바르지 않습니다.")
+                throw APIError(.currentPasswordInvalid)
             }
             try await EmailChangeToken.query(on: db).filter(\.$user.$id == userID).delete()
             req.auditIdentity(userID)
@@ -237,10 +237,7 @@ struct AuthController: RouteCollection {
         guard body.email.utf8.count <= 254,
               body.email.contains("@"),
               body.email.contains(".") else {
-            throw Abort(
-                .badRequest,
-                reason: "올바른 이메일 형식을 입력해주세요."
-            )
+            throw APIError(.validationFailed, variant: .email)
         }
 
         let responseMessage = "비밀번호 재설정 안내 메일을 발송했습니다."
@@ -263,10 +260,7 @@ struct AuthController: RouteCollection {
 
                 guard let resetURLBase = passwordResetURLBase ?? Environment.get("PASSWORD_RESET_URL_BASE"),
                       !resetURLBase.isEmpty else {
-                    throw Abort(
-                        .internalServerError,
-                        reason: "PASSWORD_RESET_URL_BASE environment variable is required."
-                    )
+                    throw APIError(.internalError)
                 }
 
                 let resetURL = "\(resetURLBase)?token=\(rawToken)"
@@ -300,10 +294,7 @@ struct AuthController: RouteCollection {
         try validate(password: body.newPassword)
 
         guard body.token.utf8.count == 64 else {
-            throw Abort(
-                .badRequest,
-                reason: "유효하지 않은 비밀번호 재설정 토큰입니다."
-            )
+            throw APIError(.passwordResetTokenInvalid, variant: .malformedResetToken)
         }
 
         let tokenHash = AuthSession.hash(body.token)
@@ -312,20 +303,14 @@ struct AuthController: RouteCollection {
             .filter(\.$tokenHash == tokenHash)
             .first()
         else {
-            throw Abort(
-                .badRequest,
-                reason: "유효하지 않거나 만료된 비밀번호 재설정 토큰입니다."
-            )
+            throw APIError(.passwordResetTokenInvalid)
         }
 
         guard let expiresAt = resetToken.expiresAt,
               expiresAt > Date() else {
             try? await resetToken.delete(on: req.db)
 
-            throw Abort(
-                .badRequest,
-                reason: "유효하지 않거나 만료된 비밀번호 재설정 토큰입니다."
-            )
+            throw APIError(.passwordResetTokenInvalid)
         }
 
         let userID = resetToken.$user.id
@@ -336,7 +321,7 @@ struct AuthController: RouteCollection {
             guard let currentToken = try await PasswordResetToken.query(on: db)
                 .filter(\.$user.$id == userID).filter(\.$tokenHash == tokenHash).first(),
                   let expiry = currentToken.expiresAt, expiry > Date() else {
-                throw Abort(.badRequest, reason: "유효하지 않거나 만료된 비밀번호 재설정 토큰입니다.")
+                throw APIError(.passwordResetTokenInvalid)
             }
 
             try await EmailChangeToken.query(on: db).filter(\.$user.$id == userID).delete()

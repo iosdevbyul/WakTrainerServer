@@ -20,6 +20,7 @@ struct AuthIntegrationTests {
     func accountLifecycle() async throws {
         let emailService = MockEmailService()
         try await withApp(configure: { app in
+            APIErrorMiddleware.install(on: app)
             // Application.make loads .env before this closure runs.
             // Missing or unsafe configuration must fail instead of silently skipping.
             let name = try #require(Environment.get("TEST_DATABASE_NAME"))
@@ -174,6 +175,7 @@ struct AuthIntegrationTests {
             try await verifySessionRaces(app)
             try await verifyEmailRateLimits(app)
             try await verifyRateLimits(app)
+            try await verifyAPIErrorContracts(app, emailService: emailService)
             try await verifyAuditLogging(app, emailService: emailService)
             try await verifyMaintenance(app, emailService: emailService)
             try await app.autoRevert()
@@ -379,7 +381,7 @@ struct AuthIntegrationTests {
                     do {
                         try await LoginRateLimiter.consume(key: "test:concurrent", limit: 5, seconds: 60, on: app.db)
                         return true
-                    } catch let error as Abort where error.status == .tooManyRequests {
+                    } catch let error as any AbortError where error.status == .tooManyRequests {
                         return false
                     }
                 }

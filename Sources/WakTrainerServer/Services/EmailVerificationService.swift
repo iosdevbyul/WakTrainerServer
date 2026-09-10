@@ -48,18 +48,18 @@ struct EmailVerificationService: Sendable {
         guard let base, var components = URLComponents(string: base),
               components.scheme == "https", components.host != nil,
               components.user == nil, components.password == nil else {
-            throw Abort(.internalServerError, reason: "A valid HTTPS \(setting) is required.")
+            throw APIError(.internalError)
         }
         var items = components.queryItems ?? []
         items.removeAll { $0.name == "token" }
         items.append(.init(name: "token", value: token))
         components.queryItems = items
-        guard let url = components.url?.absoluteString else { throw Abort(.internalServerError) }
+        guard let url = components.url?.absoluteString else { throw APIError(.internalError) }
         return url
     }
 
     func verify(token rawToken: String, on req: Request) async throws {
-        let invalid = Abort(.badRequest, reason: "유효하지 않거나 만료된 이메일 인증 토큰입니다.")
+        let invalid = APIError(.emailVerificationTokenInvalid)
         guard rawToken.utf8.count == 64 else { throw invalid }
         let hash = AuthSession.hash(rawToken)
         guard let existing = try await EmailVerificationToken.query(on: req.db)
@@ -69,7 +69,7 @@ struct EmailVerificationService: Sendable {
             let user: User
             do {
                 user = try await AuthSession.lockUser(userID, on: db)
-            } catch let error as Abort where error.status == .unauthorized {
+            } catch let error as any AbortError where error.status == .unauthorized {
                 throw invalid
             }
             // Re-read under the same user lock as resend/withdraw. Only one consumer wins.

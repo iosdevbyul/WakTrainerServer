@@ -6,7 +6,7 @@ extension AuthController {
     @Sendable
     func sessions(req: Request) async throws -> SessionListResponseDTO {
         let payload = try await AuthSession.payload(from: req)
-        guard let userID = UUID(uuidString: payload.subject.value) else { throw Abort(.unauthorized) }
+        guard let userID = UUID(uuidString: payload.subject.value) else { throw APIError(.sessionInvalid, variant: .legacyUnauthorized) }
         return try await req.db.transaction { db in
             _ = try await AuthSession.lockUser(userID, on: db)
             _ = try await AuthSession.validate(payload, on: db, request: req)
@@ -26,9 +26,9 @@ extension AuthController {
     @Sendable
     func revokeSession(req: Request) async throws -> MessageResponseDTO {
         let payload = try await AuthSession.payload(from: req)
-        guard let userID = UUID(uuidString: payload.subject.value) else { throw Abort(.unauthorized) }
+        guard let userID = UUID(uuidString: payload.subject.value) else { throw APIError(.sessionInvalid, variant: .legacyUnauthorized) }
         guard let value = req.parameters.get("sessionID"), let target = UUID(uuidString: value) else {
-            throw Abort(.badRequest, reason: "올바른 세션 ID를 입력해주세요.")
+            throw APIError(.validationFailed, variant: .sessionID)
         }
         try await req.db.transaction { db in
             _ = try await AuthSession.lockUser(userID, on: db)
@@ -42,7 +42,7 @@ extension AuthController {
                     }
                 }
             guard try await query.first() != nil else {
-                throw Abort(.notFound, reason: "세션을 찾을 수 없습니다.")
+                throw APIError(.notFound, variant: .sessionNotFound)
             }
             try await query.delete()
             req.auditContext.sessionManagementID = target
@@ -64,7 +64,7 @@ extension AuthController {
 
     private func revokeSessions(req: Request, keepingCurrent: Bool) async throws {
         let payload = try await AuthSession.payload(from: req)
-        guard let userID = UUID(uuidString: payload.subject.value) else { throw Abort(.unauthorized) }
+        guard let userID = UUID(uuidString: payload.subject.value) else { throw APIError(.sessionInvalid, variant: .legacyUnauthorized) }
         try await req.db.transaction { db in
             _ = try await AuthSession.lockUser(userID, on: db)
             let current = try await AuthSession.validate(payload, on: db, request: req)

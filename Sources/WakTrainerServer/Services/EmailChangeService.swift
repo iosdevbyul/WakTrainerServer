@@ -10,7 +10,7 @@ struct EmailChangeService: Sendable {
 
     func request(newEmail: String, currentPassword: String,
                  payload: AccessTokenPayload, on req: Request) async throws {
-        guard let userID = UUID(uuidString: payload.subject.value) else { throw Abort(.unauthorized) }
+        guard let userID = UUID(uuidString: payload.subject.value) else { throw APIError(.sessionInvalid, variant: .legacyUnauthorized) }
         var createdTokenID: UUID?
         do {
             let allowed = try await emailService.withRequest(to: newEmail, action: .emailChangeVerification, on: req) {
@@ -18,13 +18,13 @@ struct EmailChangeService: Sendable {
                     let user = try await AuthSession.lockUser(userID, on: db)
                     _ = try await AuthSession.validate(payload, on: db, request: req)
                     guard try await req.password.async.verify(currentPassword, created: user.passwordHash) else {
-                        throw Abort(.unauthorized, reason: "현재 비밀번호가 올바르지 않습니다.")
+                        throw APIError(.currentPasswordInvalid)
                     }
                     guard user.email != newEmail else {
-                        throw Abort(.badRequest, reason: "현재 이메일과 다른 이메일을 입력해주세요.")
+                        throw APIError(.validationFailed, variant: .sameEmail)
                     }
                     guard try await User.query(on: db).filter(\.$email == newEmail).first() == nil else {
-                        throw Abort(.conflict, reason: "이미 사용 중인 이메일입니다.")
+                        throw APIError(.emailAlreadyExists)
                     }
                     let rawToken = AuthSession.randomToken()
                     let url = try EmailVerificationService.verificationURL(
@@ -41,7 +41,7 @@ struct EmailChangeService: Sendable {
                 return prepared.1
             }
             guard allowed else {
-                throw Abort(.tooManyRequests, reason: "잠시 후 다시 요청해주세요.")
+                throw APIError(.rateLimited)
             }
         } catch {
             // Never delete a replacement created by a concurrent request.
@@ -53,9 +53,9 @@ struct EmailChangeService: Sendable {
     }
 
     func confirm(token rawToken: String, payload: AccessTokenPayload, on req: Request) async throws {
-        let invalid = Abort(.badRequest, reason: "유효하지 않거나 만료된 이메일 변경 토큰입니다.")
+        let invalid = APIError(.emailChangeTokenInvalid)
         guard rawToken.utf8.count == 64 else { throw invalid }
-        guard let userID = UUID(uuidString: payload.subject.value) else { throw Abort(.unauthorized) }
+        guard let userID = UUID(uuidString: payload.subject.value) else { throw APIError(.sessionInvalid, variant: .legacyUnauthorized) }
         let hash = AuthSession.hash(rawToken)
         do {
             try await req.db.transaction { db in
@@ -65,7 +65,7 @@ struct EmailChangeService: Sendable {
                     .filter(\.$user.$id == userID).filter(\.$tokenHash == hash).first(),
                       token.expiresAt > Date(), token.pendingEmail != user.email else { throw invalid }
                 guard try await User.query(on: db).filter(\.$email == token.pendingEmail).first() == nil else {
-                    throw Abort(.conflict, reason: "이미 사용 중인 이메일입니다.")
+                    throw APIError(.emailAlreadyExists)
                 }
                 // users.email UNIQUE arbitrates other users' confirmations/signups.
                 user.email = token.pendingEmail
@@ -78,7 +78,7 @@ struct EmailChangeService: Sendable {
                     .filter(\.$id != session.requireID()).delete()
             }
         } catch let error as any DatabaseError where error.isConstraintFailure {
-            throw Abort(.conflict, reason: "이미 사용 중인 이메일입니다.")
+            throw APIError(.emailAlreadyExists)
         }
     }
 }

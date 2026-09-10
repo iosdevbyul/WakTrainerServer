@@ -53,8 +53,7 @@ enum LoginRateLimiter {
         let attempts = try row.decode(column: "attempts", as: Int.self)
         if attempts > limit {
             let retryAfter = try row.decode(column: "retry_after", as: Int.self)
-            throw Abort(.tooManyRequests, headers: ["Retry-After": String(retryAfter)],
-                        reason: "로그인 요청이 너무 많습니다. 잠시 후 다시 시도해주세요.")
+            throw APIError(.rateLimited, variant: .loginRateLimit, retryAfter: retryAfter)
         }
     }
 }

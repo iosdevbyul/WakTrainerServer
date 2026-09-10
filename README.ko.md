@@ -647,3 +647,11 @@ AUDIT_HASH_KEY
 20 batch로 정리합니다. `AUDIT_RETENTION_DAYS` 기본값은 90이며 90 미만은 거부합니다.
 기존 lazy cleanup은 유지합니다. 일부 대상이 실패해도 나머지는 시도한 후 실패 종료합니다.
 배포·동시성·처리 제한·운영 로그는 [DB maintenance 문서](docs/database-maintenance.md)를 참고하세요.
+
+## API 에러 응답
+
+기존 `error`, `reason`을 유지하고 `status`, `code`, `message`, 선택적인 안전한 validation
+`details`를 추가합니다. `status`는 HTTP status와, `reason`은 `message`와 항상 같습니다.
+신규 클라이언트는 `code`로 분기하고 `message`를 사용하세요. `reason`은 호환용 필드입니다.
+성공 응답과 기존 HTTP status 정책은 유지하며 내부 진단 정보는 에러 응답에 복사하지 않습니다.
+전체 코드·예외·클라이언트 후속 작업은 [API 에러 문서](docs/api-errors.md)를 참고하세요.

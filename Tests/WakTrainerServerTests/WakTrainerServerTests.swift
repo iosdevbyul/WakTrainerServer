@@ -6,7 +6,7 @@ import Testing
 struct WakTrainerServerTests {
     @Test("Public route and protected routes without authentication")
     func routesWithoutAuthentication() async throws {
-        try await withApp(configure: { app in try routes(app) }) { app in
+        try await withApp(configure: { app in APIErrorMiddleware.install(on: app); try routes(app) }) { app in
             let hello = try await app.sendRequest(.GET, "hello")
             #expect(hello.status == .ok)
             #expect(hello.body.string == "Hello, world!")

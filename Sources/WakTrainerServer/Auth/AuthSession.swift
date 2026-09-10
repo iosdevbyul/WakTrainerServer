@@ -19,24 +19,25 @@ enum AuthSession {
     // Serialize session mutations per user, including concurrent refresh requests.
     static func lockUser(_ id: UUID, on database: any Database) async throws -> User {
         guard let sql = database as? any SQLDatabase else {
-            throw Abort(.internalServerError, reason: "Authentication requires a SQL database.")
+            throw APIError(.internalError)
         }
         try await sql.raw("SELECT id FROM users WHERE id = \(bind: id) FOR UPDATE").run()
         guard let user = try await User.find(id, on: database) else {
-            throw Abort(.unauthorized)
+            throw APIError(.sessionInvalid, variant: .legacyUnauthorized)
         }
         return user
     }
 
     static func payload(from req: Request) async throws -> AccessTokenPayload {
+        guard req.headers.bearerAuthorization != nil else { throw APIError(.authenticationRequired) }
         do {
             let payload = try await req.jwt.verify(as: AccessTokenPayload.self)
             guard UUID(uuidString: payload.subject.value) != nil, payload.sessionID != nil else {
-                throw Abort(.unauthorized)
+                throw APIError(.sessionInvalid, variant: .legacyUnauthorized)
             }
             return payload
         } catch {
-            throw Abort(.unauthorized, reason: "유효한 인증 토큰이 필요합니다.")
+            throw APIError(.accessTokenInvalidOrExpired)
         }
     }
 
@@ -46,7 +47,7 @@ enum AuthSession {
               let session = try await RefreshToken.find(sessionID, on: database),
               session.$user.id == userID,
               session.expiresAt > Date() else {
-            throw Abort(.unauthorized, reason: "만료되었거나 폐기된 세션입니다.")
+            throw APIError(.sessionInvalid)
         }
         request?.auditIdentity(userID, session: session)
         return session
@@ -63,7 +64,7 @@ enum AuthSession {
 
     /// Caller holds the user lock (or owns a newly inserted user). Bounded per-user cleanup.
     static func cleanupExpired(for userID: UUID, on database: any Database) async throws {
-        guard let sql = database as? any SQLDatabase else { throw Abort(.internalServerError) }
+        guard let sql = database as? any SQLDatabase else { throw APIError(.internalError) }
         try await sql.raw("""
             DELETE FROM refresh_tokens WHERE id IN (
                 SELECT id FROM refresh_tokens

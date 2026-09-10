@@ -650,3 +650,11 @@ expired session/token/rate-limit rows and old audit logs in batches of 500, at m
 table. `AUDIT_RETENTION_DAYS` defaults to 90; values below 90 are rejected. Existing lazy cleanup
 remains. Any target failure produces a failure exit after the other targets are attempted.
 See [database maintenance](docs/database-maintenance.md) for deployment, concurrency, limits and logs.
+
+## API Error Responses
+
+Errors retain `error` and `reason` and add `status`, `code`, `message`, and optional safe validation
+`details`. `status` always equals the HTTP status, and `reason` always equals `message`. New clients
+should branch on `code` and display `message`; `reason` is a compatibility field. Existing success
+responses and HTTP status policies are unchanged. Internal diagnostic details are never copied into
+error responses. See [API errors](docs/api-errors.md) for all codes, exceptions and client follow-up.

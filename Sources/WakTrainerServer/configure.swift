@@ -60,5 +60,6 @@ func configure(_ app: Application) async throws {
     app.migrations.add(IndexSessionUserExpiryMigration())
     app.migrations.add(CreateAuditLogMigration())
     app.migrations.add(IndexMaintenanceExpiryMigration())
+    APIErrorMiddleware.install(on: app)
     try routes(app)
 }

@@ -69,7 +69,7 @@ struct EmailService: Sendable {
             return false
         }
         if let message = try await prepare() {
-            guard message.recipient == email else { throw Abort(.internalServerError) }
+            guard message.recipient == email else { throw APIError(.internalError) }
             try await transport.send(message, on: req)
         }
         return true
@@ -80,10 +80,7 @@ private struct ResendEmailTransport: EmailSending {
     func send(_ message: EmailMessage, on req: Request) async throws {
         guard let apiKey = Environment.get("RESEND_API_KEY"),
               !apiKey.isEmpty else {
-            throw Abort(
-                .internalServerError,
-                reason: "RESEND_API_KEY environment variable is required."
-            )
+            throw APIError(.internalError)
         }
 
         let body = ResendEmailRequest(
@@ -106,10 +103,7 @@ private struct ResendEmailTransport: EmailSending {
 
         guard response.status.code >= 200,
               response.status.code < 300 else {
-            throw Abort(
-                .badGateway,
-                reason: "Failed to send password reset email."
-            )
+            throw APIError(.emailDeliveryFailed)
         }
     }
 }
