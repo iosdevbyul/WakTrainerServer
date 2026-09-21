@@ -1,0 +1,43 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main, chore/bootstrap-server]
+permissions:
+  contents: read
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    container: swift:6.3-noble
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: waktrainer
+          POSTGRES_PASSWORD: ci-test-only
+          POSTGRES_DB: waktrainer_test
+        options: >-
+          --health-cmd "pg_isready -U waktrainer -d waktrainer_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_USERNAME: waktrainer
+      DATABASE_PASSWORD: ci-test-only
+      DATABASE_NAME: waktrainer_test
+      DATABASE_TLS: disable
+      RUN_DATABASE_TESTS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve locked dependencies
+        run: swift package resolve --force-resolved-versions
+      - name: Build
+        run: swift build
+      - name: Test (including PostgreSQL connection)
+        run: swift test
+      - name: Verify DATABASE_URL connection
+        run: swift test --skip-build --filter postgresConnection
+        env:
+          DATABASE_URL: postgres://waktrainer:ci-test-only@postgres:5432/waktrainer_test?sslmode=disable

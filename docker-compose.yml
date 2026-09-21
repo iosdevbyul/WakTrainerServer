@@ -1,0 +1,33 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${DATABASE_USERNAME:-waktrainer}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:?Set DATABASE_PASSWORD in .env}
+      POSTGRES_DB: ${DATABASE_NAME:-waktrainer}
+    ports:
+      - "127.0.0.1:${DATABASE_PORT:-5433}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  app:
+    build: .
+    profiles: ["app"]
+    environment:
+      DATABASE_HOST: db
+      DATABASE_PORT: 5432
+      DATABASE_USERNAME: ${DATABASE_USERNAME:-waktrainer}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:?Set DATABASE_PASSWORD in .env}
+      DATABASE_NAME: ${DATABASE_NAME:-waktrainer}
+      DATABASE_TLS: disable
+    ports:
+      - "127.0.0.1:${APP_PORT:-8081}:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+volumes:
+  postgres_data:
