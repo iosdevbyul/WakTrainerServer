@@ -1,8 +1,9 @@
 # WakTrainerServer
 
-The initial backend foundation for the WakTrainer app, built with Swift 6.3,
-Vapor 4, Fluent, and PostgreSQL 16. Authentication and workout domains are outside
-this phase.
+The backend foundation for the WakTrainer app, built with Swift 6.3, Vapor 4,
+Fluent, and PostgreSQL 16. Protected requests validate their current session over
+HTTP with the separate TrisAuthenticationServer. WakTrainer domain APIs are not
+implemented yet.
 
 ## Local development
 
@@ -62,6 +63,53 @@ it does not use the authentication server's volume. The Compose app connects to
 the database container on its internal port 5432. For external deployments,
 provide passwords through secret management and configure TLS appropriately.
 
+## Authentication integration
+
+Set `AUTHENTICATION_SERVER_URL` to the authentication server's base URL. Development
+and tests default to `http://127.0.0.1:8080`; production requires an explicit value
+and fails startup if it is missing. Use HTTPS for public endpoints, or an HTTP
+address on a trusted private network. URLs may include a path prefix and trailing
+slash, but must not include credentials, a query, or a fragment. No production URL
+is hardcoded.
+
+Each protected request with a valid bearer header makes
+`GET {AUTHENTICATION_SERVER_URL}/auth/introspect`,
+forwarding the original access token only in `Authorization: Bearer <access-token>`.
+Other incoming headers, query parameters, and bodies are not forwarded. The client
+uses a five-second timeout and refuses redirects. Responses are not cached.
+
+A response authenticates the request only when HTTP 200 contains `active: true`
+and valid UUIDs in both `userId` and `sessionId`. The middleware attaches a minimal
+`AuthenticatedUser` to Vapor's request authentication storage. Handlers use
+`try request.auth.require(AuthenticatedUser.self)` and do not call the authentication
+server themselves.
+
+| Condition | WakTrainer response |
+| --- | --- |
+| Missing, malformed, or duplicate bearer authorization | 401 |
+| Upstream 401/403 or `active: false` | 401 |
+| Invalid JSON/UUIDs, missing fields, unexpected status, or redirect | 502 |
+| Upstream 5xx/429, timeout, or connection failure | 503 |
+
+Errors use fixed messages; upstream bodies and transport details are not exposed.
+Tokens are not logged or persisted. Only the authenticated user and session UUIDs
+are retained for the current request.
+
+`GET /v1/auth-test` is a temporary verification endpoint. Send the bearer header
+and expect HTTP 200 with only:
+
+```json
+{
+  "userId": "<user UUID>",
+  "sessionId": "<session UUID>"
+}
+```
+
+Future APIs can join the existing authenticated `/v1` group in `routes.swift`.
+No domain routes are included now. `/health` remains public and makes neither a
+database query nor an introspection request; it also works during an authentication
+service outage once this server is configured and running.
+
 ## Tests
 
 ```sh
@@ -70,8 +118,10 @@ swift test
 RUN_DATABASE_TESTS=1 swift test
 ```
 
-The default tests verify health responses, application startup/shutdown, and
-configuration validation without requiring a running database. The connection
+The default tests verify health, startup/shutdown, configuration, bearer forwarding,
+UUID validation, middleware, failure mapping, and log/response redaction. They use
+mock authentication clients plus a loopback HTTP redirect test; they never require
+the deployed authentication server or a running database. The connection
 test runs only with `RUN_DATABASE_TESTS=1` and fails if a connection cannot be
 acquired. `.env` is for local use. Check the target database variables before
 running integration tests. The current connection test does not modify data.
@@ -79,7 +129,7 @@ running integration tests. The current connection test does not modify data.
 ## Docker
 
 ```sh
-docker compose --profile app up --build -d
+AUTHENTICATION_SERVER_URL=http://host.docker.internal:8080 docker compose --profile app up --build -d
 curl --fail http://127.0.0.1:8081/health
 docker compose --profile app logs app
 docker compose --profile app down
@@ -88,6 +138,12 @@ docker compose --profile app down
 By default, `docker compose up -d` starts PostgreSQL only. The `app` profile also
 starts the server. The image uses separate Swift build and Ubuntu runtime stages
 and runs as a non-root user. `.env` is excluded from the image.
+
+The example above uses Docker Desktop to reach an authentication server on the
+host. Container loopback (`127.0.0.1`) refers to the container itself; choose an
+authentication-server address reachable from the app container. On other Docker
+setups, provide the appropriate host or service address. Compose passes
+`AUTHENTICATION_SERVER_URL` into the production-mode app explicitly.
 
 `down` preserves database data. Initial PostgreSQL user/password settings apply
 only when an empty volume is initialized for the first time.
@@ -102,11 +158,13 @@ verifies `DATABASE_URL` connectivity using the same test binary.
 
 The separate shared TrisAuthenticationServer owns login, logout, registration,
 token issuance/refresh, password reset, and session management. WakTrainerServer
-will eventually validate issued access tokens to identify users, but this phase
-does not implement that integration.
+validates sessions through its HTTP introspection endpoint. It never queries the
+authentication database and has no dependency on AuthenticationKit or
+AuthenticationServerKit.
 
-There are no User database models, JWT logic, Workout/Routine/Exercise/Statistics
-domains, or dependencies on iOS model packages.
+There are no User database models, JWT signing/parsing, token refresh handling,
+Workout/Routine/Exercise/Statistics/Calendar domains, caching, service API keys,
+or dependencies on iOS model packages.
 
 ## Railway deployment preparation
 
@@ -144,7 +202,12 @@ reference if the database service has a different name.
 DATABASE_URL=${{Postgres.DATABASE_URL}}
 DATABASE_TLS=disable
 LOG_LEVEL=info
+AUTHENTICATION_SERVER_URL=https://authentication.example
 ```
+
+Replace `https://authentication.example` with the reachable TrisAuthenticationServer
+base URL. It must expose `/auth/introspect` using the existing bearer contract.
+No shared authentication package or authentication database credentials are needed.
 
 This `DATABASE_TLS=disable` example applies to an **internal database address on
 Railway's private network**. [Railway private networking](https://docs.railway.com/networking/private-networking)
