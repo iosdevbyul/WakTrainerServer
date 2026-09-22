@@ -19,22 +19,109 @@ struct DatabaseDiagnosticReport: Sendable {
     let lines: [String]
 }
 
+
+
+enum DatabaseDiagnosticTLSPolicy: Sendable {
+    case requireTLS
+    case railwayPrivateNetwork
+
+    func isSatisfied(tlsEnabled: Bool) -> Bool {
+        switch self {
+        case .requireTLS:
+            return tlsEnabled
+
+        case .railwayPrivateNetwork:
+            return true
+        }
+    }
+
+    static func resolve(
+        environment: (String) -> String?
+    ) throws -> Self {
+        let network = environment("DATABASE_NETWORK") ?? "public"
+        let tls = environment("DATABASE_TLS")
+
+        guard let url = environment("DATABASE_URL"),
+              let components = URLComponents(string: url),
+              let hostname = components.host?.lowercased()
+        else {
+            throw Abort(
+                .internalServerError,
+                reason: "Database diagnostic requires a valid DATABASE_URL."
+            )
+        }
+
+        switch network {
+        case "railway-private":
+            guard hostname == "postgres.railway.internal",
+                  components.port == 5432,
+                  tls == "disable"
+            else {
+                throw Abort(
+                    .internalServerError,
+                    reason: "Invalid Railway private database configuration."
+                )
+            }
+
+            return .railwayPrivateNetwork
+
+        case "public":
+            guard hostname != "postgres.railway.internal",
+                  tls == "require"
+            else {
+                throw Abort(
+                    .internalServerError,
+                    reason: "Public database connections require TLS."
+                )
+            }
+
+            return .requireTLS
+
+        default:
+            throw Abort(
+                .internalServerError,
+                reason: "Unsupported DATABASE_NETWORK value."
+            )
+        }
+    }
+}
+
 enum DatabaseDiagnostic {
-    static func run(load: () async throws -> DatabaseDiagnosticSnapshot) async -> DatabaseDiagnosticReport {
+    
+    static func run(
+        tlsPolicy: DatabaseDiagnosticTLSPolicy = .requireTLS,
+        load: () async throws -> DatabaseDiagnosticSnapshot
+    ) async -> DatabaseDiagnosticReport {
         do {
             let snapshot = try await load()
+            
+            let tlsPolicySatisfied = tlsPolicy.isSatisfied(
+                tlsEnabled: snapshot.tlsEnabled
+            )
+            
             let checks = [
                 ("database = waktrainer", snapshot.databaseMatches),
                 ("user = waktrainer_app", snapshot.userMatches),
-                ("TLS active", snapshot.tlsEnabled),
+                ("TLS policy satisfied", tlsPolicySatisfied),
                 ("read-only transaction", snapshot.readOnly),
                 ("database CONNECT", snapshot.canConnect),
                 ("public schema USAGE", snapshot.publicUsage),
             ]
-            return .init(passed: checks.allSatisfy(\.1), lines:
-                ["PASS database connection and read-only query"] + checks.map { "\($0.1 ? "PASS" : "FAIL") \($0.0)" } + [
-                    "PASS privilege inspection (granted=true): database CREATE=\(snapshot.databaseCreate), public CREATE=\(snapshot.publicCreate), elevated role=\(snapshot.elevatedRole)"
-                ])
+            
+            return .init(
+                passed: checks.allSatisfy(\.1),
+                lines:
+                    [
+                        "PASS database connection and read-only query",
+                        "INFO PostgreSQL TLS active=\(snapshot.tlsEnabled)"
+                    ]
+                    + checks.map {
+                        "\($0.1 ? "PASS" : "FAIL") \($0.0)"
+                    }
+                    + [
+                        "PASS privilege inspection (granted=true): database CREATE=\(snapshot.databaseCreate), public CREATE=\(snapshot.publicCreate), elevated role=\(snapshot.elevatedRole)"
+                    ]
+            )
         } catch {
             // Never retain or print driver errors, which can contain connection details.
             return .init(passed: false, lines: ["FAIL database connection or read-only query; details withheld"])
@@ -83,9 +170,27 @@ struct VerifyDatabaseCommand: AsyncCommand {
     struct Signature: CommandSignature { init() {} }
     var help: String { "Verify database identity, TLS, and privileges using read-only SQL." }
 
-    func run(using context: CommandContext, signature: Signature) async throws {
-        let report = await DatabaseDiagnostic.run { try await DatabaseDiagnostic.load(from: context.application) }
-        for line in report.lines { context.console.print(line) }
+    
+    func run(
+        using context: CommandContext,
+        signature: Signature
+    ) async throws {
+        let tlsPolicy = try DatabaseDiagnosticTLSPolicy.resolve(
+            environment: { Environment.get($0) }
+        )
+
+        let report = await DatabaseDiagnostic.run(
+            tlsPolicy: tlsPolicy
+        ) {
+            try await DatabaseDiagnostic.load(
+                from: context.application
+            )
+        }
+
+        for line in report.lines {
+            context.console.print(line)
+        }
+
         guard report.passed else {
             throw DatabaseDiagnosticFailure()
         }
