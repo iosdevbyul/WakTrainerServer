@@ -77,6 +77,8 @@ enum DatabaseDiagnostic {
     }
 }
 
+struct DatabaseDiagnosticFailure: Error {}
+
 struct VerifyDatabaseCommand: AsyncCommand {
     struct Signature: CommandSignature { init() {} }
     var help: String { "Verify database identity, TLS, and privileges using read-only SQL." }
@@ -85,7 +87,7 @@ struct VerifyDatabaseCommand: AsyncCommand {
         let report = await DatabaseDiagnostic.run { try await DatabaseDiagnostic.load(from: context.application) }
         for line in report.lines { context.console.print(line) }
         guard report.passed else {
-            throw Abort(.internalServerError, reason: "Database diagnostic failed.")
+            throw DatabaseDiagnosticFailure()
         }
     }
 }
