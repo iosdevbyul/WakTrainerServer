@@ -63,6 +63,57 @@ it does not use the authentication server's volume. The Compose app connects to
 the database container on its internal port 5432. For external deployments,
 provide passwords through secret management and configure TLS appropriately.
 
+## Read-only database diagnostic
+
+After deploying an image containing this command, run it inside the
+**WakTrainerServer application container**:
+
+```sh
+/app/WakTrainerServer verify-database --env production
+echo $?
+```
+
+The command reuses the application's Fluent PostgreSQL configuration, including
+`DATABASE_URL` and `DATABASE_TLS`. Normal production configuration requirements,
+including `AUTHENTICATION_SERVER_URL`, still apply. It opens a real connection
+from this invocation of the application binary without starting an HTTP server,
+calling the authentication service, or running migrations.
+
+The report requires database `waktrainer`, user `waktrainer_app`, active PostgreSQL
+TLS, a read-only transaction, database CONNECT, and public schema USAGE. Exit code
+0 means all checks passed; a failed check or connection returns exit code 1.
+The current deployment should use `DATABASE_TLS=require`; disabling TLS makes
+this diagnostic fail even if the connection succeeds.
+
+Database CREATE, public schema CREATE, and elevated role privileges are reported
+as observations, not required privileges or a least-privilege certification.
+Elevated role means superuser, CREATEDB, CREATEROLE, replication, or BYPASSRLS.
+No application tables exist yet, so this does not certify future table or sequence
+permissions, schema readiness, or authentication-database isolation.
+
+Only catalog queries and transaction-control statements run, inside
+`BEGIN READ ONLY` with a five-second statement timeout and a final `ROLLBACK`.
+Driver diagnostics are suppressed, and errors use fixed text without credentials
+or connection URLs. Running this command on a Mac proves only that Mac's
+connectivity. Running it in the deployed application container verifies that
+container's network and application configuration, not an existing HTTP worker's
+connection pool.
+
+Diagnostic unit tests run with `swift test`. Optional PostgreSQL integration
+coverage requires a disposable local TLS-enabled PostgreSQL instance with database
+`waktrainer` and user `waktrainer_app`. Set the individual `DATABASE_*` fixture
+variables, `RUN_DATABASE_DIAGNOSTIC_TESTS=1`, and `TEST_DATABASE_CA_FILE` to its
+trusted certificate file, then run:
+
+```sh
+swift test --filter DatabaseDiagnostic
+```
+
+The fixture accepts only `localhost` or `127.0.0.1`, ignores `DATABASE_URL`, and
+tests both TLS and plaintext connections. Test-only certificate trust preserves
+certificate and hostname verification without changing system trust. It does not
+provision the fixture or modify database data.
+
 ## Authentication integration
 
 Set `AUTHENTICATION_SERVER_URL` to the authentication server's base URL. Development

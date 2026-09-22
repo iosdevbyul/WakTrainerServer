@@ -64,5 +64,6 @@ func configure(
     app.storage[AuthenticationConfiguration.self] = authenticationConfiguration
     // Never redirect a request carrying an access token to another endpoint.
     app.http.client.configuration.redirectConfiguration = .disallow
+    app.asyncCommands.use(VerifyDatabaseCommand(), as: "verify-database")
     try routes(app, authenticationClient: HTTPAuthenticationClient(configuration: authenticationConfiguration))
 }
