@@ -58,5 +58,8 @@ func configure(
         }
     }
     app.databases.use(.postgres(configuration: configuration), as: .psql)
+    app.storage[AuthenticationConfiguration.self] = try AuthenticationConfiguration(
+        environment: app.environment, values: environment
+    )
     try routes(app)
 }
