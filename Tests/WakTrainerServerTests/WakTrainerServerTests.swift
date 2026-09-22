@@ -56,7 +56,8 @@ struct WakTrainerServerTests {
         try await withApp { app in
             app.environment = .production
             try await configure(app, environment: { key in
-                ["PORT": "19091",
+                ["AUTHENTICATION_SERVER_URL": "http://authentication:8080",
+                 "PORT": "19091",
                  "DATABASE_URL": "postgresql://user:test-only@db:5432/railway?sslmode=disable",
                  "DATABASE_PASSWORD": "", "DATABASE_PORT": "invalid"][key]
             })

@@ -58,5 +58,11 @@ func configure(
         }
     }
     app.databases.use(.postgres(configuration: configuration), as: .psql)
-    try routes(app)
+    let authenticationConfiguration = try AuthenticationConfiguration(
+        environment: app.environment, values: environment
+    )
+    app.storage[AuthenticationConfiguration.self] = authenticationConfiguration
+    // Never redirect a request carrying an access token to another endpoint.
+    app.http.client.configuration.redirectConfiguration = .disallow
+    try routes(app, authenticationClient: HTTPAuthenticationClient(configuration: authenticationConfiguration))
 }
