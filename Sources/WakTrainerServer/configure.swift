@@ -61,5 +61,7 @@ func configure(
     app.storage[AuthenticationConfiguration.self] = try AuthenticationConfiguration(
         environment: app.environment, values: environment
     )
+    // Never redirect a request carrying an access token to another endpoint.
+    app.http.client.configuration.redirectConfiguration = .disallow
     try routes(app)
 }
