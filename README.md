@@ -114,6 +114,42 @@ tests both TLS and plaintext connections. Test-only certificate trust preserves
 certificate and hostname verification without changing system trust. It does not
 provision the fixture or modify database data.
 
+
+### Database diagnostic network policy
+
+The `verify-database` command uses an explicit network policy to
+evaluate the PostgreSQL TLS state.
+
+`DATABASE_NETWORK` supports two values:
+
+- `public` (default): Requires `DATABASE_TLS=require` and an
+  active PostgreSQL TLS connection.
+- `railway-private`: Allows PostgreSQL TLS to be disabled only
+  when `DATABASE_URL` targets `postgres.railway.internal:5432`
+  and `DATABASE_TLS=disable`.
+
+Production configuration for Railway private networking:
+
+```text
+DATABASE_NETWORK=railway-private
+DATABASE_TLS=disable
+DATABASE_URL=postgresql://<user>:<password>@postgres.railway.internal:5432/waktrainer
+```
+
+For public database connections:
+
+```text
+DATABASE_NETWORK=public
+DATABASE_TLS=require
+```
+
+The diagnostic always reports the actual PostgreSQL TLS state.
+A private-network configuration can satisfy the diagnostic policy
+without PostgreSQL TLS, but hostname and environment validation
+do not independently prove that network traffic is encrypted.
+
+Invalid or contradictory configurations are rejected.
+
 ## Authentication integration
 
 Set `AUTHENTICATION_SERVER_URL` to the authentication server's base URL. Development
