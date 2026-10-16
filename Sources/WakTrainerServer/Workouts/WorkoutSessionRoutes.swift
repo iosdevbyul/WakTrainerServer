@@ -15,7 +15,7 @@ struct WorkoutUploadResponse: Content {
 
 enum WorkoutSessionRoutes {
     static func register(_ routes: RoutesBuilder) {
-        routes.put("workouts", ":sessionID", use: upload)
+        routes.on(.PUT, "workouts", ":sessionID", body: .collect(maxSize: "25mb"), use: upload)
         routes.get("workouts", use: list)
         routes.get("workouts", ":sessionID", use: detail)
     }
@@ -33,7 +33,7 @@ enum WorkoutSessionRoutes {
         let id = try sessionID(request)
         guard let bytes = request.body.data,
               bytes.readableBytes > 0,
-              bytes.readableBytes <= 5_000_000 else {
+              bytes.readableBytes <= 25_000_000 else {
             throw Abort(.payloadTooLarge, reason: "Workout payload is empty or too large.")
         }
         let payload = Data(bytes.readableBytesView)
