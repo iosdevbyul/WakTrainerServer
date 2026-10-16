@@ -64,6 +64,26 @@ struct AuthenticationRouteTests {
         }
     }
 
+    @Test("Workout APIs reject requests without authentication")
+    func workoutEndpointsRequireAuthentication() async throws {
+        try await withApp(configure: { app in
+            try routes(app, authenticationClient: StubAuthenticationClient { _ in
+                Issue.record("Missing authentication must not call the authentication server")
+                throw AuthenticationError.unauthorized
+            })
+        }) { app in
+            let id = UUID().uuidString
+            for (method, path) in [
+                (HTTPMethod.GET, "/v1/workouts"),
+                (HTTPMethod.GET, "/v1/workouts/\\(id)"),
+                (HTTPMethod.PUT, "/v1/workouts/\\(id)")
+            ] {
+                let response = try await app.sendRequest(method, path)
+                #expect(response.status == .unauthorized)
+            }
+        }
+    }
+
     @Test("Public health never calls the authentication client")
     func publicHealth() async throws {
         try await withApp(configure: { app in
