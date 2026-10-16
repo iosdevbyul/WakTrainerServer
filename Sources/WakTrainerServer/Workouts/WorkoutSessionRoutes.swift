@@ -50,8 +50,8 @@ enum WorkoutSessionRoutes {
         }
 
         if let existing = try await WorkoutSessionRecord.query(on: request.db)
-            .filter(\\.$userID == user.userID)
-            .filter(\\.$sessionID == id)
+            .filter(\.$userID == user.userID)
+            .filter(\.$sessionID == id)
             .first() {
             guard existing.payloadJSON == json else {
                 throw Abort(.conflict, reason: "Workout session ID already exists with different content.")
@@ -67,8 +67,8 @@ enum WorkoutSessionRoutes {
     private static func list(_ request: Request) async throws -> [WorkoutSessionMetadata] {
         let user = try request.auth.require(AuthenticatedUser.self)
         let records = try await WorkoutSessionRecord.query(on: request.db)
-            .filter(\\.$userID == user.userID)
-            .sort(\\.$createdAt, .descending)
+            .filter(\.$userID == user.userID)
+            .sort(\.$createdAt, .descending)
             .limit(100)
             .all()
         return records.map {
@@ -80,8 +80,8 @@ enum WorkoutSessionRoutes {
         let user = try request.auth.require(AuthenticatedUser.self)
         let id = try sessionID(request)
         guard let record = try await WorkoutSessionRecord.query(on: request.db)
-            .filter(\\.$userID == user.userID)
-            .filter(\\.$sessionID == id)
+            .filter(\.$userID == user.userID)
+            .filter(\.$sessionID == id)
             .first() else {
             throw Abort(.notFound)
         }
