@@ -21,7 +21,7 @@ struct UserProfilePayload: Content {
         }
     }
 
-    private static let dateFormatter: DateFormatter = {
+    private static var dateFormatter: DateFormatter {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.calendar = Calendar(identifier: .gregorian)
@@ -29,7 +29,7 @@ struct UserProfilePayload: Content {
         formatter.dateFormat = "yyyy-MM-dd"
         formatter.isLenient = false
         return formatter
-    }()
+    }
 }
 
 enum UserProfileRoutes {
