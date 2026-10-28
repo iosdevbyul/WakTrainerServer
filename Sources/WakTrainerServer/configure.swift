@@ -59,6 +59,7 @@ func configure(
     }
     app.databases.use(.postgres(configuration: configuration), as: .psql)
     app.migrations.add(CreateWorkoutSessionMigration())
+    app.migrations.add(CreateUserProfileMigration())
     let authenticationConfiguration = try AuthenticationConfiguration(
         environment: app.environment, values: environment
     )

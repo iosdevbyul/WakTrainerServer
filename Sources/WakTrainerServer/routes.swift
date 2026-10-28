@@ -17,6 +17,7 @@ func routes(_ app: Application, authenticationClient: any AuthenticationClient) 
 
     let authenticated = app.grouped("v1").grouped(SessionAuthenticator(client: authenticationClient))
     WorkoutSessionRoutes.register(authenticated)
+    UserProfileRoutes.register(authenticated)
     authenticated.get("auth-test") { request in
         let user = try request.auth.require(AuthenticatedUser.self)
         return AuthTestResponse(userId: user.userID, sessionId: user.sessionID)
