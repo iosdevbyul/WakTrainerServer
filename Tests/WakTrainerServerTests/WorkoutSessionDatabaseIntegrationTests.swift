@@ -143,4 +143,83 @@ struct WorkoutSessionDatabaseIntegrationTests {
         }
     }
 
+    @Test("Authenticated profile HTTP requests enforce ownership and return persisted data",
+          .enabled(if: Environment.get("RUN_DATABASE_TESTS") == "1"))
+    func authenticatedProfileHTTP() async throws {
+        let firstID = UUID()
+        let secondID = UUID()
+        let firstToken = "profile-integration-first"
+        let secondToken = "profile-integration-second"
+        let first = UserProfilePayload(
+            gender: "남성", birthDate: "2005-10-24", heightCm: 175, weightKg: 70
+        )
+        let second = UserProfilePayload(
+            gender: "여성", birthDate: "1999-06-15", heightCm: 165, weightKg: 60
+        )
+        try await withApp(configure: { app in
+            try await configure(app, authenticationClient: StubAuthenticationClient { token in
+                switch token {
+                case firstToken: return AuthenticatedUser(userID: firstID, sessionID: UUID())
+                case secondToken: return AuthenticatedUser(userID: secondID, sessionID: UUID())
+                default: throw AuthenticationError.unauthorized
+                }
+            })
+        }) { app in
+            try await app.autoMigrate()
+            let unknown = try await app.sendRequest(.GET, "/v1/profile", beforeRequest: { request in
+                request.headers.bearerAuthorization = .init(token: firstToken)
+            })
+            #expect(unknown.status == .notFound)
+
+            let unauthenticated = try await app.sendRequest(.PUT, "/v1/profile", beforeRequest: { request in
+                try request.content.encode(first)
+            })
+            #expect(unauthenticated.status == .unauthorized)
+
+            let savedFirst = try await app.sendRequest(.PUT, "/v1/profile", beforeRequest: { request in
+                request.headers.bearerAuthorization = .init(token: firstToken)
+                try request.content.encode(first)
+            })
+            #expect(savedFirst.status == .ok)
+            #expect(try savedFirst.content.decode(UserProfilePayload.self).birthDate == first.birthDate)
+
+            let savedSecond = try await app.sendRequest(.PUT, "/v1/profile", beforeRequest: { request in
+                request.headers.bearerAuthorization = .init(token: secondToken)
+                try request.content.encode(second)
+            })
+            #expect(savedSecond.status == .ok)
+
+            let firstRead = try await app.sendRequest(.GET, "/v1/profile?userId=\(secondID)", beforeRequest: { request in
+                request.headers.bearerAuthorization = .init(token: firstToken)
+            })
+            #expect(firstRead.status == .ok)
+            #expect(try firstRead.content.decode(UserProfilePayload.self).birthDate == first.birthDate)
+
+            let secondRead = try await app.sendRequest(.GET, "/v1/profile", beforeRequest: { request in
+                request.headers.bearerAuthorization = .init(token: secondToken)
+            })
+            #expect(secondRead.status == .ok)
+            #expect(try secondRead.content.decode(UserProfilePayload.self).birthDate == second.birthDate)
+
+            let invalid = UserProfilePayload(
+                gender: "남성", birthDate: "2005-02-30", heightCm: 175, weightKg: 70
+            )
+            let rejected = try await app.sendRequest(.PUT, "/v1/profile", beforeRequest: { request in
+                request.headers.bearerAuthorization = .init(token: firstToken)
+                try request.content.encode(invalid)
+            })
+            #expect(rejected.status == .badRequest)
+
+            let records = try await UserProfileRecord.query(on: app.db)
+                .filter(\.$userID == firstID).all()
+            #expect(records.count == 1)
+            let otherRecords = try await UserProfileRecord.query(on: app.db)
+                .filter(\.$userID == secondID).all()
+            #expect(otherRecords.count == 1)
+            for record in records + otherRecords {
+                try await record.delete(on: app.db)
+            }
+        }
+    }
+
 }
