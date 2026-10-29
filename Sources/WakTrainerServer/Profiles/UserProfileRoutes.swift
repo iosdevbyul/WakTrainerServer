@@ -56,22 +56,42 @@ enum UserProfileRoutes {
         let payload = try request.content.decode(UserProfilePayload.self)
         try payload.validate()
 
-        if let existing = try await UserProfileRecord.query(on: request.db)
-            .filter(\.$userID == user.userID)
-            .first() {
-            existing.gender = payload.gender
-            existing.birthDate = payload.birthDate
-            existing.heightCm = payload.heightCm
-            existing.weightKg = payload.weightKg
-            try await existing.update(on: request.db)
-        } else {
-            let record = UserProfileRecord(
-                userID: user.userID, gender: payload.gender,
-                birthDate: payload.birthDate,
-                heightCm: payload.heightCm, weightKg: payload.weightKg
-            )
-            try await record.create(on: request.db)
-        }
+        try await persist(payload, userID: user.userID, on: request.db)
         return payload
+    }
+
+    /// Handles simultaneous first saves for a user. A unique constraint guarantees
+    /// that only one row is created; the losing insert retries as an update.
+    static func persist(_ payload: UserProfilePayload, userID: UUID, on database: any Database) async throws {
+        if let existing = try await UserProfileRecord.query(on: database)
+            .filter(\.$userID == userID)
+            .first() {
+            try await update(existing, with: payload, on: database)
+            return
+        }
+
+        let record = UserProfileRecord(
+            userID: userID, gender: payload.gender,
+            birthDate: payload.birthDate, heightCm: payload.heightCm, weightKg: payload.weightKg
+        )
+        do {
+            try await record.create(on: database)
+        } catch {
+            // Do not mask unrelated database errors if a row was not created.
+            guard let existing = try await UserProfileRecord.query(on: database)
+                .filter(\.$userID == userID)
+                .first() else {
+                throw error
+            }
+            try await update(existing, with: payload, on: database)
+        }
+    }
+
+    private static func update(_ record: UserProfileRecord, with payload: UserProfilePayload, on database: any Database) async throws {
+        record.gender = payload.gender
+        record.birthDate = payload.birthDate
+        record.heightCm = payload.heightCm
+        record.weightKg = payload.weightKg
+        try await record.update(on: database)
     }
 }
