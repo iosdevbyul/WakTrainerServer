@@ -108,4 +108,39 @@ struct WorkoutSessionDatabaseIntegrationTests {
             try await second.delete(on: app.db)
         }
     }
+    @Test("Concurrent first profile saves converge on one user-owned record",
+          .enabled(if: Environment.get("RUN_DATABASE_TESTS") == "1"))
+    func concurrentProfileCreation() async throws {
+        try await withApp(configure: { app in
+            try await configure(app)
+        }) { app in
+            try await app.autoMigrate()
+            let userID = UUID()
+            let first = UserProfilePayload(
+                gender: "남성", birthDate: "2005-10-24", heightCm: 175, weightKg: 70
+            )
+            let second = UserProfilePayload(
+                gender: "여성", birthDate: "1999-06-15", heightCm: 165, weightKg: 60
+            )
+
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                for index in 0..<12 {
+                    let payload = index.isMultiple(of: 2) ? first : second
+                    group.addTask {
+                        try await UserProfileRoutes.persist(payload, userID: userID, on: app.db)
+                    }
+                }
+                try await group.waitForAll()
+            }
+
+            let records = try await UserProfileRecord.query(on: app.db)
+                .filter(\.$userID == userID).all()
+            #expect(records.count == 1)
+            if let record = records.first {
+                #expect([first.birthDate, second.birthDate].contains(record.birthDate))
+                try await record.delete(on: app.db)
+            }
+        }
+    }
+
 }
