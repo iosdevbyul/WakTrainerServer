@@ -5,7 +5,8 @@ import Vapor
 
 func configure(
     _ app: Application,
-    environment: (String) -> String? = { Environment.get($0) }
+    environment: (String) -> String? = { Environment.get($0) },
+    authenticationClient: (any AuthenticationClient)? = nil
 ) async throws {
     guard let port = Int(environment("PORT") ?? "8080"), (1...65535).contains(port) else {
         throw Abort(.internalServerError, reason: "PORT must be between 1 and 65535.")
@@ -67,5 +68,5 @@ func configure(
     // Never redirect a request carrying an access token to another endpoint.
     app.http.client.configuration.redirectConfiguration = .disallow
     app.asyncCommands.use(VerifyDatabaseCommand(), as: "verify-database")
-    try routes(app, authenticationClient: HTTPAuthenticationClient(configuration: authenticationConfiguration))
+    try routes(app, authenticationClient: authenticationClient ?? HTTPAuthenticationClient(configuration: authenticationConfiguration))
 }
